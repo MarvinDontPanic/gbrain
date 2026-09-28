@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
-import { mkdtempSync, mkdirSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { once } from 'node:events';
@@ -30,7 +30,7 @@ beforeEach(async () => { await resetPgliteState(engine); await engine.setConfig(
 afterAll(async () => { await disposePersistenceConsumer(engine); await engine.disconnect(); });
 
 async function fixture(run: (root: string) => Promise<void>) {
-  const home = mkdtempSync(join(tmpdir(), 'gbrain-admin-intent-'));
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'gbrain-admin-intent-')));
   try {
     await withEnv({ GBRAIN_HOME: home, DATABASE_URL: undefined, GBRAIN_DATABASE_URL: undefined }, async () => {
       const root = join(home, 'canonical'); mkdirSync(root);

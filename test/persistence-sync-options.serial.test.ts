@@ -441,7 +441,7 @@ for (const change of ['unchanged', 'archived', 'recreated', 'wrong-owner-epoch',
         VALUES($1,'Fixture admin','test-only','admin',$2,ARRAY['submit_job'])`, [clientId, f.id]);
       const ctx = { engine, remote: true, sourceId: f.id, auth: { clientId, principal: { kind: 'oauth_client', id: clientId }, scopes: ['admin'], sourceId: f.id, allowedOperations: ['submit_job'] } } as OperationContext;
       const remote = await prepareRemoteJob(ctx, 'sync', { noPull: true });
-      authority = await withSubmissionAuthority(remote.authority, () => managedSyncAuthority(engine, f.id, binding.source_incarnation, f.root));
+      authority = await withSubmissionAuthority(remote.authority, () => managedSyncAuthority(engine, f.id, binding.source_incarnation, remote.data.repoPath as string));
     }
     const intent: SyncIntent = { kind: 'managed_sync_import', processingOptions: { noEmbed: true, noExtract: true, noSchemaPack: change !== 'remote-job-revoked' },
       expected_revision: before.revision, path, sourcePath: path, content, rawHash: sha256(content), ownerEpoch: String(binding.owner_epoch), syncAuthority: authority,
