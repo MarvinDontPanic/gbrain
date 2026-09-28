@@ -168,6 +168,7 @@ export async function invalidateStaleSignatureEmbeddingsGuarded(
         SET ${colId} = NULL, embedded_at = NULL
        FROM pages p
       WHERE cc.page_id = p.id
+        AND p.deleted_at IS NULL
         AND cc.${colId} IS NOT NULL
         AND NOT ${currentChunk}
         AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')

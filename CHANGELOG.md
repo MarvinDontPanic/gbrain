@@ -10,6 +10,16 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.59.3.2] - 2026-09-28
+
+**Deleted pages stay out of embedding backfills.**
+
+Embedding backfills now leave soft-deleted pages alone. Counts and estimates describe the live work still needed, without repeatedly selecting archived chunks. Retained chunks remain available for recovery.
+
+### Itemized changes
+
+Apply the same live-page predicate to both engines, both cursor orders, signature invalidation and content-drift invalidation. Synthetic PostgreSQL and PGLite tests verify retained vectors and metadata.
+
 ## [0.59.3.0] - 2026-09-28
 
 **A broken worker installation now asks for repair instead of repeatedly interrupting your jobs.**
