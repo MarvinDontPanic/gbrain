@@ -10,6 +10,16 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.59.3.4] - 2026-09-28
+
+**Recorded page identities sync consistently across platforms.**
+
+A page can keep its established name even when its file has a different name. Synchronization now accepts that existing relationship on macOS and Linux as well as Windows. A file cannot claim a different page by changing its declared name.
+
+### Itemized changes
+
+Allow the mismatch only when the stored canonical path and parsed slug both preserve the existing identity. Cover the accepted mapping and rejected identity change with synthetic file synchronization tests.
+
 ## [0.59.3.0] - 2026-09-28
 
 **A broken worker installation now asks for repair instead of repeatedly interrupting your jobs.**

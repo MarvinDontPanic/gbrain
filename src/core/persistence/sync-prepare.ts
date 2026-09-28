@@ -161,9 +161,9 @@ export async function prepareManagedSyncMutation(engine: BrainEngine, row: Write
     { remote: false, sourceId: row.source_id })).pack.manifest : (await loadActivePackForEngine(engine, { remote: row.authority.remote, sourceId: row.source_id }).catch(() => null))?.manifest;
   const parsedInput = parseMarkdown(p.content, row.slug, { activePack });
   const expectedSlug = resolveSlugForPath(p.sourcePath);
-  const retainedWindowsOrigin = process.platform === 'win32' && snapshot?.page.source_path != null &&
+  const retainedRecordedOrigin = snapshot?.page.source_path != null &&
     syncOriginPath(snapshot.page.source_path) === syncOriginPath(p.sourcePath) && parsedInput.slug === snapshot.page.slug;
-  if (expectedSlug && parsedInput.slug !== expectedSlug && slugifyPath(parsedInput.slug) !== expectedSlug && !retainedWindowsOrigin) {
+  if (expectedSlug && parsedInput.slug !== expectedSlug && slugifyPath(parsedInput.slug) !== expectedSlug && !retainedRecordedOrigin) {
     throw new OperationError('invalid_params', 'The file frontmatter slug conflicts with its physical origin.');
   }
   if (!p.companyApproval && snapshot && !p.lineEndingOnly && p.rawHash !== sha256(p.content) && !sameCanonicalImport(snapshot, parsedInput)) {

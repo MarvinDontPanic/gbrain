@@ -1,3 +1,4 @@
+import { serializePageToMarkdown } from '../src/core/markdown.ts';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -429,4 +430,23 @@ check('publication revalidates a recreated working-tree deletion and activation 
     expect((await getWriteRequest(engine, admission.principal, requestId))?.intent).toEqual(intent);
     expect((await engine.executeRaw('SELECT last_commit FROM sources WHERE id=$1', [f.id]))[0].last_commit).toBeNull();
   }
+});
+
+check('an exact recorded origin retains its existing slug on every native platform', async engine => {
+  const f = await fixture(engine, 'notes/recorded.md', 'notes/example', { 'notes/recorded.md': content });
+  const canonical = serializePageToMarkdown(f.snapshot.page, f.snapshot.tags).replace(/^---\n/, '---\nslug: notes/example\n');
+  writeFileSync(join(f.root, 'notes/recorded.md'), canonical);
+  execFileSync('git', ['-C', f.root, 'add', '-A']);
+  execFileSync('git', ['-C', f.root, 'commit', '-qm', 'Export existing canonical identity']);
+  const history = await engine.getVersions(f.slug, { sourceId: f.id });
+  expect(await performManagedSync(engine, f.opts)).toMatchObject({ status: 'first_sync', added: 0, modified: 0, deleted: 0 });
+  expect(await engine.readPageSnapshot(f.slug, { sourceId: f.id })).toEqual(f.snapshot);
+  expect(await engine.getVersions(f.slug, { sourceId: f.id })).toEqual(history);
+  expect(readFileSync(join(f.root, 'notes/recorded.md'), 'utf8')).toBe(canonical);
+  writeFileSync(join(f.root, 'notes/recorded.md'), canonical.replace('slug: notes/example', 'slug: notes/impostor'));
+  execFileSync('git', ['-C', f.root, 'add', '-A']);
+  execFileSync('git', ['-C', f.root, 'commit', '-qm', 'Attempt a different canonical identity']);
+  expect(await performManagedSync(engine, { ...f.opts, full: false })).toMatchObject({ status: 'blocked_by_failures', managedWrite: { write_error: 'invalid_params' } });
+  expect(await engine.readPageSnapshot(f.slug, { sourceId: f.id })).toEqual(f.snapshot);
+  expect(await engine.getPage('notes/impostor', { sourceId: f.id })).toBeNull();
 });
