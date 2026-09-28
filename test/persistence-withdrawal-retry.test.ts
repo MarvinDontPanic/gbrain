@@ -11,6 +11,7 @@ import { submitForgetMutation } from '../src/core/persistence/memory-mutations.t
 import { withCoordinatedWrite } from '../src/core/persistence/context.ts';
 import { getWriteRequest } from '../src/core/persistence/journal.ts';
 import { isolatedPersistencePostgres } from './helpers/persistence-postgres.ts';
+import { renderFactsTable } from '../src/core/facts-fence.ts';
 import { withEnv } from './helpers/with-env.ts';
 
 const engines: BrainEngine[] = [];
@@ -36,7 +37,7 @@ afterAll(async () => {
 });
 async function seed(engine: BrainEngine, slug: string) {
   return engine.transaction(tx => withCoordinatedWrite(tx, [sourceId], async () => {
-    const page = await tx.putPage(slug, { type: 'note', title: 'Example', compiled_truth: 'Canonical example', timeline: '', frontmatter: {} }, { sourceId });
+    const page = await tx.putPage(slug, { type: 'note', title: 'Example', compiled_truth: renderFactsTable([{ rowNum: 1, claim: `Withdraw ${slug}`, kind: 'fact', visibility: 'world', confidence: 1, notability: 'medium', active: true }]), timeline: '', frontmatter: {} }, { sourceId });
     const fact = await tx.insertFact({ fact: `Withdraw ${slug}`, source: 'test', entity_slug: slug, visibility: 'world' }, { source_id: sourceId });
     return { page, fact };
   }));

@@ -10,6 +10,16 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.59.3.6] - 2026-09-28
+
+**Withdrawing a fact leaves unrelated pages current.**
+
+Withdrawing a fact no longer makes every page in the same source stale. Pages that contain the claim are updated, while unrelated pages retain their current search data. Pending writes must check the current withdrawal record before publishing.
+
+### Itemized changes
+
+Scope invalidation to affected canonical content and validate prepared publications against withdrawals. Include generated concurrency and visibility regressions. Prepared-publication validation follows the contribution by @tarush1989 in #5469.
+
 ## [0.59.3.0] - 2026-09-28
 
 **A broken worker installation now asks for repair instead of repeatedly interrupting your jobs.**
