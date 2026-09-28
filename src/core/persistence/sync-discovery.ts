@@ -17,7 +17,7 @@ import type { CompanyBrainPlan } from '../company-brain/types.ts';
 import { assertDistinctSyncOrigins, syncOriginPath } from './sync-origin.ts';
 import { assertManagedSyncActive } from './sync-authority.ts';
 
-export interface SyncEntry { path: string; sourcePath: string; action: 'import' | 'delete'; working: boolean; slug?: string; pageId?: number | null; revision?: string | null; }
+export interface SyncEntry { path: string; sourcePath: string; action: 'import' | 'delete'; working: boolean; slug?: string; pageId?: number | null; revision?: string | null; unownedDeletion?: boolean; }
 export interface SyncDiscovery { binding: WorktreeBinding; root: string; gitRoot: string; sourceId: string; incarnation: string;
   companyPlan?: CompanyBrainPlan;
   from: string | null; target: string; entries: SyncEntry[]; uncommitted?: { added: number; modified: number; deleted: number }; slugMode: 'git-root' | 'source-root'; }
@@ -186,8 +186,13 @@ export async function discoverManagedSync(engine: BrainEngine, opts: SyncOpts, c
     if (!slug && entry.action === 'import') slug = parseMarkdown(readSyncContent(discovered, entry), '').slug;
     if (!slug) throw new OperationError('invalid_params', 'The imported file has no usable page slug.');
     const page = origins[0] ?? bySlug.get(slug);
-    if (page?.source_path != null && syncOriginPath(page.source_path) !== syncOriginPath(entry.sourcePath)) throw new OperationError('page_identity_changed', 'A different origin occupies the imported slug.');
-    Object.assign(entry, { slug, pageId: page?.id ?? null, revision: page?.knowledge_revision ?? null });
+    const foreignOrigin = page?.source_path != null && syncOriginPath(page.source_path) !== syncOriginPath(entry.sourcePath);
+    // A deleted unowned filename must not delete the page at its derived slug.
+    // Retain that page's identity/revision solely as a no-op publication fence.
+    const unownedDeletion = entry.action === 'delete' && origins.length === 0 && foreignOrigin;
+    if (foreignOrigin && !unownedDeletion) throw new OperationError('page_identity_changed', 'A different origin occupies the imported slug.');
+    Object.assign(entry, { slug, pageId: page?.id ?? null, revision: page?.knowledge_revision ?? null,
+      ...(unownedDeletion ? { unownedDeletion: true } : {}) });
   }
   if (!working) {
     const uncommitted = { added: new Set([...dirty.added,...dirty.renamed.map(r=>r.to)].filter(eligible)).size,

@@ -142,7 +142,7 @@ async function freezeEntry(engine: BrainEngine, cursor: Cursor, key: string, ass
   let lineEndingOnly = false;
   if (entry) {
     assertSyncEntryOrigin(cursor, entry);
-    await assertSyncPageOrigin(engine, cursor.sourceId, entry.sourcePath, entry.pageId ?? null, entry.action === 'delete');
+    await assertSyncPageOrigin(engine, cursor.sourceId, entry.sourcePath, entry.unownedDeletion ? null : entry.pageId ?? null, entry.action === 'delete');
     assertActive();
     const bytes = readSyncFile(cursor.root, entry.path);
     rawHash = bytes === null ? null : sha256(bytes);
@@ -159,13 +159,14 @@ async function freezeEntry(engine: BrainEngine, cursor: Cursor, key: string, ass
     const snapshot = await engine.readPageSnapshot(slug, { sourceId: cursor.sourceId, includeDeleted: true });
     assertActive();
     if ((snapshot?.page.id ?? null) !== pageId || (snapshot?.revision ?? null) !== revision ||
-        (snapshot?.page.source_path != null && syncOriginPath(snapshot.page.source_path) !== syncOriginPath(entry.sourcePath))) {
+        (!entry.unownedDeletion && snapshot?.page.source_path != null && syncOriginPath(snapshot.page.source_path) !== syncOriginPath(entry.sourcePath))) {
       throw new OperationError('revision_conflict', 'A page changed after this sync cursor was enumerated.');
     }
   }
   await validateSyncAuthority(engine, cursor.authority, slug);
   assertActive();
   return { requestId: randomUUID(), slug, pageId, intent: { kind: !entry ? 'managed_sync_checkpoint' : entry.action === 'import' ? 'managed_sync_import' : 'managed_sync_delete',
+    ...(entry?.unownedDeletion ? { unownedDeletion: true } : {}),
     expected_revision: revision, sourcePath: entry?.sourcePath ?? null, path: entry?.path ?? null, rawHash, content, lineEndingOnly,
     processingOptions: cursor.processingOptions,
     ownerEpoch: String(cursor.binding.owner_epoch), syncAuthority: cursor.authority, cursorKey: key, runId: cursor.runId,

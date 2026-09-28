@@ -33,6 +33,7 @@ export interface SyncIntent extends Record<string, unknown> {
   expected_revision: string | null; sourcePath: string | null; path: string | null;
   rawHash: string | null; content: string | null; ownerEpoch: string;
   lineEndingOnly?: boolean;
+  unownedDeletion?: boolean;
   working?: boolean;
   processingOptions?: SyncProcessingOptions;
   syncAuthority: SyncAuthority; cursorKey: string; runId: string; index: number;
@@ -41,6 +42,7 @@ export interface SyncIntent extends Record<string, unknown> {
 export async function prepareManagedSyncMutation(engine: BrainEngine, row: WriteRequest, _config: GBrainConfig): Promise<PreparedMutation> {
   const p = row.intent as SyncIntent | null;
   if (!p || !['managed_sync_import', 'managed_sync_delete', 'managed_sync_checkpoint'].includes(p.kind)) throw new OperationError('invalid_params', 'Unsupported internal sync intent.');
+  if (p.unownedDeletion && p.kind !== 'managed_sync_delete') throw new OperationError('invalid_params', 'Only a deletion can record an unowned path.');
   await assertManagedSyncActive(engine);
   if (p.kind !== 'managed_sync_delete' && (!p.processingOptions ||
       ['noEmbed', 'noExtract', 'noSchemaPack'].some(key => typeof p.processingOptions?.[key as keyof SyncProcessingOptions] !== 'boolean'))) {
@@ -74,7 +76,7 @@ export async function prepareManagedSyncMutation(engine: BrainEngine, row: Write
     origin = { path: p.path, sourcePath: p.sourcePath, action: p.kind === 'managed_sync_delete' ? 'delete' : 'import', working };
     originContext = { root, gitRoot: realpathSync(syncGit(root, ['rev-parse', '--show-toplevel']).trim()), target: p.target, slugMode: p.slugMode };
     assertSyncEntryOrigin(originContext, origin);
-    await assertSyncPageOrigin(engine, row.source_id, p.sourcePath, row.page_id, p.kind === 'managed_sync_delete');
+    await assertSyncPageOrigin(engine, row.source_id, p.sourcePath, p.unownedDeletion ? null : row.page_id, p.kind === 'managed_sync_delete');
   }
   const validate = async (tx: BrainEngine) => {
     await assertManagedSyncActive(tx, true);
@@ -91,7 +93,7 @@ export async function prepareManagedSyncMutation(engine: BrainEngine, row: Write
     if (p.path !== null && syncRawHash(root, p.path) !== p.rawHash) throw new OperationError('source_changed', 'The imported file changed after sync admission.');
     if (origin && originContext) {
       assertSyncEntryOrigin(originContext, origin);
-      await assertSyncPageOrigin(tx, row.source_id, origin.sourcePath, row.page_id, p.kind === 'managed_sync_delete');
+      await assertSyncPageOrigin(tx, row.source_id, origin.sourcePath, p.unownedDeletion ? null : row.page_id, p.kind === 'managed_sync_delete');
     }
     if (p.companyApproval) {
       const [source] = await tx.executeRaw<{ config: unknown }>('SELECT config FROM sources WHERE id=$1', [row.source_id]);
@@ -129,9 +131,12 @@ export async function prepareManagedSyncMutation(engine: BrainEngine, row: Write
   const source = { sourceId: row.source_id };
   const snapshot = await engine.readPageSnapshot(row.slug, { ...source, includeDeleted: true });
   assertPageRevision(snapshot, p.expected_revision === null ? {} : { expectedRevision: p.expected_revision });
-  if ((snapshot?.page.id ?? null) !== row.page_id || (snapshot?.page.source_path != null && syncOriginPath(snapshot.page.source_path) !== syncOriginPath(p.sourcePath!))) {
+  const foreignOrigin = snapshot?.page.source_path != null && syncOriginPath(snapshot.page.source_path) !== syncOriginPath(p.sourcePath!);
+  if ((snapshot?.page.id ?? null) !== row.page_id || (p.unownedDeletion ? !foreignOrigin : foreignOrigin)) {
     throw new OperationError('page_identity_changed', 'The imported path no longer names the accepted page.');
   }
+  if (p.unownedDeletion) return { observedRevision: snapshot!.revision, noop: true, validate,
+    apply: async () => ({ status: 'skipped', slug: row.slug, source_id: row.source_id, noop: true, reason: 'unowned_deleted_path' }) };
   if (p.kind === 'managed_sync_delete') return { observedRevision: snapshot?.revision ?? null, noop: !snapshot || snapshot.page.deleted_at != null,
     validate, apply: async tx => {
       if (snapshot && snapshot.page.deleted_at == null) { await tx.createVersion(row.slug, source); await tx.softDeletePage(row.slug, source); }

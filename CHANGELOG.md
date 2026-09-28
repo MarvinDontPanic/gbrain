@@ -10,6 +10,16 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.59.3.3] - 2026-09-28
+
+**Deleting a duplicate file no longer blocks sync.**
+
+Removing a duplicate filename no longer blocks synchronization when that file does not own the matching page. The real page, its recorded file and its search data stay intact. Changed ownership or revisions still refuse the operation.
+
+### Itemized changes
+
+Recognize unowned deletions during discovery and retain their ownership evidence through preparation and locked publication. Complete them without page mutations or projection effects.
+
 ## [0.59.3.0] - 2026-09-28
 
 **A broken worker installation now asks for repair instead of repeatedly interrupting your jobs.**
