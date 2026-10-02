@@ -1,9 +1,34 @@
 import type { BrainEngine } from '../../src/core/engine.ts';
 import { expect } from 'bun:test';
 import { refreshProjectionStatistics } from '../../src/core/search/projection-statistics.ts';
+import { withVectorSettings } from '../../src/core/search/vector-settings.ts';
 
 export const candidateColumn = { name: 'embedding_candidate_fixture', type: 'vector' as const, dimensions: 8, embeddingModel: '' };
 export const candidateVector = new Float32Array([1, 0, 0.1, 0, 0, 0, 0, 0]);
+
+export async function verifyVectorSettingsRollback(engine: BrainEngine): Promise<void> {
+  const settingsSql = `SELECT current_setting('hnsw.ef_search') AS ef,
+    current_setting('hnsw.iterative_scan') AS iterative,
+    current_setting('hnsw.max_scan_tuples') AS tuples`;
+  const before = await engine.executeRaw(settingsSql);
+  await expect(engine.transaction(async tx => {
+    await withVectorSettings(tx.executeRaw.bind(tx), true, 250, -1, async () => {
+      throw new Error('search must not run after rejected settings');
+    });
+  })).rejects.toThrow();
+  expect(await engine.executeRaw(settingsSql)).toEqual(before);
+  await engine.transaction(async tx => {
+    await tx.executeRaw('SET LOCAL hnsw.ef_search = 75');
+    const outer = await tx.executeRaw(settingsSql);
+    await expect(tx.transaction(async inner => {
+      await withVectorSettings(inner.executeRaw.bind(inner), true, 250, 2000, async () => {
+        throw new Error('synthetic search failure');
+      });
+    })).rejects.toThrow('synthetic search failure');
+    expect(await tx.executeRaw(settingsSql)).toEqual(outer);
+  });
+  expect(await engine.executeRaw(settingsSql)).toEqual(before);
+}
 
 export async function seedVectorCandidateCorpus(engine: BrainEngine): Promise<void> {
   await engine.executeRaw(`INSERT INTO sources (id, name) VALUES ('ann-allowed', 'ann-allowed'), ('ann-other', 'ann-other')`);

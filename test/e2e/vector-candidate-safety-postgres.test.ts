@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { PostgresEngine } from '../../src/core/postgres-engine.ts';
 import { hasDatabase, setupDB, teardownDB } from './helpers.ts';
-import { candidateColumn, candidateVector, seedVectorCandidateCorpus, verifyVectorCapabilityRetry } from '../helpers/vector-candidate-corpus.ts';
+import { candidateColumn, candidateVector, seedVectorCandidateCorpus, verifyVectorCapabilityRetry, verifyVectorSettingsRollback } from '../helpers/vector-candidate-corpus.ts';
 import type { SearchOpts } from '../../src/core/types.ts';
 
 (hasDatabase() ? describe : describe.skip)('Postgres filtered ANN candidate safety', () => {
@@ -37,6 +37,7 @@ import type { SearchOpts } from '../../src/core/types.ts';
   }, 60_000);
 
   test('a transient capability probe is retried and successful capability is cached', async () => { await verifyVectorCapabilityRetry(engine); });
+  test('failed settings and searches restore native transaction and savepoint settings', async () => { await verifyVectorSettingsRollback(engine); });
 
   test('natural HNSW serves a mostly-current corpus and selective plans preserve authorization', async () => {
     const firstStatement = statements.length;
@@ -45,6 +46,7 @@ import type { SearchOpts } from '../../src/core/types.ts';
     const hits = await engine.searchVector(candidateVector, { ...opts, onVectorPoolMeta: meta => events.push(meta) });
     expect(hits).toHaveLength(75);
     expect(new Set(hits.map(hit => hit.page_id)).size).toBe(75);
+    expect(hits.map(hit => hit.score)).toEqual(hits.map(hit => hit.score).sort((a, b) => b - a));
     expect(hits.every(hit => hit.source_id === 'ann-allowed' && Number(hit.slug.split('-').at(-1)) % 100 !== 1)).toBe(true);
     expect(events).toEqual([]);
     const captured = statements[firstStatement];

@@ -71,8 +71,8 @@ export const HNSW_EF_SEARCH_MAX = 1000;
  *
  * This sizes the initial candidate list. Supported iterative scans can
  * continue beyond it, so the GUC ceiling is not a SQL output/offset limit.
- * Both engines use the same initial-list policy independently of their
- * bounded iterative work and per-page pooling.
+ * Both engines use this policy only without iterative scan support. With
+ * iteration, they preserve pgvector's configured initial-list size.
  */
 export function hnswEfSearchFor(candidateLimit: number): number {
   const wanted = Math.ceil(candidateLimit);

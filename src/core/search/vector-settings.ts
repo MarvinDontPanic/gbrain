@@ -9,10 +9,15 @@ export async function withVectorSettings<T>(
   run: () => Promise<T>,
   deadline?: number,
 ): Promise<T> {
-  const settings: Record<string, string> = { 'hnsw.ef_search': String(hnswEfSearchFor(candidateLimit)) };
+  // Iterative scans can discover closer neighbors after the initial list.
+  // Preserve pgvector's configured ef_search instead of sizing that list to
+  // the SQL pool, which can end the scan before those discoveries occur.
+  const settings: Record<string, string> = iterative ? {} : { 'hnsw.ef_search': String(hnswEfSearchFor(candidateLimit)) };
   const defaults: Record<string, string> = { 'hnsw.ef_search': String(HNSW_EF_SEARCH_DEFAULT), 'hnsw.iterative_scan': 'off', 'hnsw.max_scan_tuples': '20000' };
   if (iterative) {
-    settings['hnsw.iterative_scan'] = 'strict_order';
+    // Both engines re-sort weighted scores after per-page pooling. Relaxed
+    // iteration retains late, closer candidates that strict order discards.
+    settings['hnsw.iterative_scan'] = 'relaxed_order';
     settings['hnsw.max_scan_tuples'] = String(maxScanTuples);
   }
   if (deadline !== undefined) settings.statement_timeout = String(remainingVectorBudget(deadline));

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
-import { candidateColumn, candidateVector, seedVectorCandidateCorpus, verifyVectorCapabilityRetry } from '../helpers/vector-candidate-corpus.ts';
+import { candidateColumn, candidateVector, seedVectorCandidateCorpus, verifyVectorCapabilityRetry, verifyVectorSettingsRollback } from '../helpers/vector-candidate-corpus.ts';
 
 describe('PGLite filtered ANN candidate safety', () => {
   let engine: PGLiteEngine;
@@ -12,12 +12,14 @@ describe('PGLite filtered ANN candidate safety', () => {
   }, 240_000);
   afterAll(async () => { await engine.disconnect(); }, 60_000);
   test('a transient capability probe is retried and successful capability is cached', async () => { await verifyVectorCapabilityRetry(engine); });
+  test('failed settings and searches restore native transaction and savepoint settings', async () => { await verifyVectorSettingsRollback(engine); });
 
   test('bounded iterative scanning fills selective source and private-filtered results', async () => {
     const events: unknown[] = [];
     const hits = await engine.searchVector(candidateVector, { limit: 75, sourceId: 'ann-allowed', excludePrivate: true, embeddingColumn: candidateColumn, onVectorPoolMeta: meta => events.push(meta) });
     expect(hits).toHaveLength(75);
     expect(new Set(hits.map(hit => hit.page_id)).size).toBe(75);
+    expect(hits.map(hit => hit.score)).toEqual(hits.map(hit => hit.score).sort((a, b) => b - a));
     expect(hits.every(hit => hit.source_id === 'ann-allowed' && Number(hit.slug.split('-').at(-1)) % 100 !== 1)).toBe(true);
     expect(events).toEqual([]);
   }, 60_000);

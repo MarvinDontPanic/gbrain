@@ -91,7 +91,9 @@ written up in [`RETRIEVAL_MAXPOOL_INCIDENT.md`](../incidents/RETRIEVAL_MAXPOOL_I
   chunks fill the inner candidate pool, the engines escalate the pool in a
   bounded loop (×4 per step, at most 3 escalations). SQL candidate limits and
   offsets are independent of `ef_search`; supported pgvector versions use
-  strict iterative scans with bounded visits. A filtered short pool is not
+  relaxed iterative scans with bounded visits and preserve the native
+  configured `ef_search`. Per-page pooling and the final weighted score sort
+  restore result ordering after late candidate discoveries. A filtered short pool is not
   proof that the corpus is exhausted. Postgres may make one exact fallback
   inside the remaining eight-second arm budget; PGLite does not pretend that
   a JavaScript timeout can cancel its WASM work. Unresolved shortfalls appear
