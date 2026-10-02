@@ -51,10 +51,10 @@ Answer questions using the brain's knowledge with 3-layer search and synthesis.
 
 ## Contract
 
-This skill guarantees:
-- Every answer is grounded in brain content (no hallucination)
+This skill requires:
+- Every answer is grounded in retrieved evidence
 - Every claim has a citation tracing back to a specific page slug
-- Gaps are flagged explicitly ("the brain doesn't have information on X")
+- Unresolved retrieval gaps are flagged explicitly; a search miss does not prove corpus absence
 - Source precedence is respected (user statements > compiled truth > timeline > external)
 - Conflicting sources are noted with both citations
 
@@ -64,13 +64,16 @@ This skill guarantees:
    - Keyword search for specific names, dates, terms
    - Semantic query for conceptual questions
    - Structured queries (list by type, backlinks) for relational questions
+   - Start unfiltered and preserve ambiguity; do not guess an unnamed historical project. Original documents can be attachments on conversation pages, so `type=source` does not mean all primary evidence.
+   - Distinguish a record's date from dates within its documents before applying date filters.
 2. **Execute searches:**
    - Cheap-hybrid search gbrain for exact tokens / known names (search)
    - Full-hybrid search gbrain with multi-query expansion for concept questions (query)
    - List pages in gbrain by type or check backlinks for structural queries
-3. **Read top results.** Read the top 3-5 pages from gbrain to get full context.
+   - Verify returned metadata before claiming expansion or reranking ran: each needs a configured provider. If unavailable, issue distinct decomposed queries yourself.
+3. **Read top results.** Read the top 3-5 pages from gbrain to get full context. Verify exact recognized names, numbers, quotations and table relationships against the linked original before answering.
 4. **Synthesize answer** with citations. Every claim traces back to a specific page slug.
-5. **Flag gaps.** If the brain doesn't have info, say "the brain doesn't have information on X" rather than hallucinating. Read the result's notices first (see "When it fails"): a degraded or truncated result is not a gap.
+5. **Flag gaps.** If relevant evidence remains unfound, say "I did not find sufficient evidence in these searches." Do not declare it absent from the brain. Read the result's notices first (see "When it fails"): a degraded or truncated result is not a gap.
 
 ## When it fails
 
@@ -78,7 +81,7 @@ Follow the [agent operator protocol](../../docs/protocol/AGENT_OPERATOR_v1.md) f
 
 - Check each retrieval result for notices before answering: on MCP, extra text blocks whose first line looks like [gbrain notice empty_retrieval kind=degraded], mirrored in `_meta.gbrain_notices`; on the CLI, the `[AGENT]` block, `search_degraded`, or a `note: search degraded` line.
 - `empty_retrieval` with `kind=degraded` (or `search_degraded: keyword_only_no_embedding_provider`): an empty result is NOT proof the user has no notes. Tell the user "your brain is searching keywords only right now, so I may be missing notes on X", try exact names and synonyms with `gbrain search`, and point to the notice's fix (usually enabling embeddings).
-- `empty_retrieval` with "no retrieval degradation — this is a clean miss": then say "the brain doesn't have information on X".
+- `empty_retrieval` with "no retrieval degradation — this is a clean miss": report a clean miss for that query, not corpus absence.
 - `listing_truncated` or `budget_truncated`: the list was cut off. Say "showing the first N", and page or narrow the query before claiming something is absent.
 - `page_not_found` from `get_page`: the slug is wrong or in another source; search by title (and check `--source`) before reporting the page missing.
 
@@ -95,7 +98,7 @@ Follow the [agent operator protocol](../../docs/protocol/AGENT_OPERATOR_v1.md) f
 Answers should include:
 - Direct response to the question
 - Citations: "According to [Source: people/jane-doe, compiled truth]..."
-- Gap flags: "The brain doesn't have information on X"
+- Gap flags: "I did not find sufficient evidence in these searches"
 - Conflict notes when sources disagree
 
 ## Quality Rules
