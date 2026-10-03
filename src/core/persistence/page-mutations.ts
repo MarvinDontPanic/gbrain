@@ -162,6 +162,7 @@ export async function submitPageMutation(ctx: OperationContext,
 export async function preparePageAdmission(ctx: OperationContext,
   input: { operation: string; params: Record<string, unknown>; managedFileImport?: true; batch?: PageBatchMember }
 ): Promise<{ prior: WriteRequest; admission?: undefined; typeWarning?: undefined } | { prior?: undefined; admission: WriteAdmission; typeWarning: PageTypeWarning | null }> {
+  if (Object.hasOwn(input.params, 'deferEmbeds')) throw new OperationError('invalid_params', 'Embedding deferral is a server-side policy, not a mutation parameter.');
   if (input.operation === 'put_page' && ['kind', 'preview', 'backup_reference'].some(key => Object.hasOwn(input.params, key))) {
     if (ctx.remote !== false || input.managedFileImport !== true || !OWNER_FILE_INTENTS.has(String(input.params.kind)) ||
       ['preview', 'backup_reference'].some(key => Object.hasOwn(input.params, key))) {
@@ -170,7 +171,7 @@ export async function preparePageAdmission(ctx: OperationContext,
     }
   }
   const { page_batch: _forged, ...params } = input.params;
-  const p: Record<string, unknown> = { ...params, ...parseMutationPrecondition(params) };
+  const p: Record<string, unknown> = { ...params, ...parseMutationPrecondition(params), ...(input.operation === 'put_page' && ctx.deferEmbeds === true ? { deferEmbeds: true } : {}) };
   if (input.batch) p.page_batch = { id: input.batch.id, index: input.batch.index, size: input.batch.size };
   const requestId = input.batch ? input.batch.requestId : typeof p.request_id === 'string' ? p.request_id : randomUUID();
   const sourceId = pageMutationSource(ctx, p, input.operation);
