@@ -107,14 +107,15 @@ export function resolvePrepare(url: string): boolean | undefined {
   return undefined;
 }
 
-export function resolvePoolSize(explicit?: number): number {
+// Native instance pools supply their requested size as the env-aware fallback.
+export function resolvePoolSize(explicit?: number, fallback = DEFAULT_POOL_SIZE_FALLBACK): number {
   if (typeof explicit === 'number' && explicit > 0) return explicit;
   const raw = process.env.GBRAIN_POOL_SIZE;
   if (raw) {
     const parsed = parseInt(raw, 10);
     if (Number.isFinite(parsed) && parsed > 0) return parsed;
   }
-  return DEFAULT_POOL_SIZE_FALLBACK;
+  return fallback;
 }
 
 let warnedBadMaxLifetime = false;

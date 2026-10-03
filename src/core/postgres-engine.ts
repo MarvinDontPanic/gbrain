@@ -347,7 +347,7 @@ export class PostgresEngine implements BrainEngine {
       // env var is a user escape hatch, so it wins.
       const url = config.database_url;
       if (!url) throw new GBrainError('No database URL', 'database_url is missing', 'Provide --url');
-      const size = Math.min(config.poolSize, db.resolvePoolSize(config.poolSize));
+      const size = Math.min(config.poolSize, db.resolvePoolSize(undefined, config.poolSize));
       // Honor PgBouncer transaction-mode detection on worker-instance pools too.
       // Without this, `gbrain jobs work` against a Supabase pooler URL hits
       // "prepared statement does not exist" under load just like the module
