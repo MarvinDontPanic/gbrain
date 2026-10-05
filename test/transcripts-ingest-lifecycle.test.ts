@@ -33,7 +33,7 @@ function opts(path: string) {
   return { paths: [path], sourceId: 'default', userPatternsPath: join(dir, 'no-patterns') };
 }
 
-test('a corrected session date updates text and private visibility under the original canonical base', async () => {
+test('a corrected session date updates text and retains existing visibility under the original canonical base', async () => {
   const path = join(dir, 'rollout.jsonl');
   write(path, '2026-01-02T10:00:00Z', 'original decision');
   const first = await runTranscriptsIngest(engine, opts(path));
@@ -47,7 +47,8 @@ test('a corrected session date updates text and private visibility under the ori
   expect(updated.files[0].sessions[0].baseSlug).toBe(base);
   const pages = await engine.listPages({ type: 'conversation', sourceId: 'default', limit: 20 });
   expect(pages.every(p => p.slug === base || p.slug.startsWith(base + '-p'))).toBe(true);
-  expect(pages.every(p => p.frontmatter.visibility === 'private')).toBe(true);
+  expect(pages.find(p => p.slug === base)!.frontmatter.visibility).toBe('world');
+  expect(pages.filter(p => p.slug !== base).every(p => p.frontmatter.visibility === undefined)).toBe(true);
   const page = await engine.getPage(base, { sourceId: 'default' });
   expect(page!.compiled_truth).toContain('corrected decision');
   expect(page!.compiled_truth).not.toContain('original decision');
@@ -145,9 +146,11 @@ test('legacy mixed-prefix parts retain their identities but are reconciled on sh
   const updated = await runTranscriptsIngest(engine, opts(path));
   expect(updated.cleanScan).toBe(true);
   expect(updated.slugsTouched).toContain(mixedPart);
-  expect((await engine.getPage(mixedPart, { sourceId: 'default' }))!.compiled_truth).toContain('newest ending');
+  const updatedParts = await engine.listPages({ type: 'conversation', sourceId: 'default', limit: 100 });
+  expect(updatedParts.some(p => p.compiled_truth.includes('newest ending'))).toBe(true);
+  expect((await engine.getPage(mixedPart, { sourceId: 'default' }))!.frontmatter.date).toBe('2026-01-01');
   write(path, '2026-01-03T10:00:00Z', 'shortened again');
   const shrunk = await runTranscriptsIngest(engine, opts(path));
-  expect(shrunk.partsDeleted).toBe(1);
+  expect(shrunk.partsDeleted).toBe(updatedParts.length - 1);
   expect(await engine.getPage(mixedPart, { sourceId: 'default' })).toBeNull();
 });

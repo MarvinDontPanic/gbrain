@@ -1566,18 +1566,6 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'link_resolution',
   'link_resolution.global_basename',
   'link_resolution.cross_source',
-  // Exact native journal capacity keys consumed by persistence/limits.ts.
-  // Keep unknown spellings rejected; do not register a namespace wildcard.
-  'persistence.limits.principal_outstanding',
-  'persistence.limits.brain_outstanding',
-  'persistence.limits.principal_intent_bytes',
-  'persistence.limits.brain_intent_bytes',
-  'persistence.limits.principal_lifetime_ids',
-  'persistence.limits.brain_lifetime_ids',
-  'persistence.limits.principal_terminal_bytes',
-  'persistence.limits.brain_terminal_bytes',
-  'persistence.limits.brain_recovery_bytes',
-  'persistence.limits.worktree_recovery_bytes',
   // Spend controls (v0.42.42.0, issue #2139). Previously `--force`-only — the
   // operator had to discover these by reading source. Registered so `config
   // set` accepts them directly. See docs/operations/spend-controls.md.

@@ -20,6 +20,7 @@ import { warnOncePerProcess } from '../../utils.ts';
 
 export interface LexicalArms {
   earlyModality: ModalityMode;
+  completeKeywordFallback: () => Promise<void>;
   keywordResults: SearchResult[];
   titleResults: SearchResult[];
   exactLookupOpts: ExactLookupOpts;
@@ -72,21 +73,20 @@ export async function runLexicalArms(req: HybridRequest): Promise<LexicalArms> {
   // marker) then reaches the caller instead of a silent [].
   let keywordAccessError: unknown = null;
   let titleAccessError: unknown = null;
+  let keywordFailed = false;
+  const readKeyword = (orFallback: boolean) => engine.searchKeyword(query, { ...searchOpts, orFallback }).catch((err: unknown) => {
+    keywordFailed = true;
+    if (isDatetimeInputError(err)) throw err;
+    if (isDbAccessFailure(err)) keywordAccessError = err;
+    pushDegraded(degraded, 'keyword_arm_failed', isTimeoutError(err) ? 'timeout' : 'provider_error');
+    warnOncePerProcess('search-keyword-arm-failed', `[gbrain] searchKeyword arm failed (fail-open, keyword candidates skipped): ${err instanceof Error ? err.message : String(err)}`);
+    return [] as SearchResult[];
+  });
   const [keywordResults, titleResults]: [SearchResult[], SearchResult[]] =
     earlyModality === 'image'
       ? [[], []]
       : await Promise.all([
-          engine.searchKeyword(query, searchOpts).catch((err: unknown) => {
-            if (isDatetimeInputError(err)) throw err;
-            if (isDbAccessFailure(err)) keywordAccessError = err;
-            pushDegraded(degraded, 'keyword_arm_failed', isTimeoutError(err) ? 'timeout' : 'provider_error');
-            warnOncePerProcess(
-              'search-keyword-arm-failed',
-              `[gbrain] searchKeyword arm failed (fail-open, keyword candidates skipped): ` +
-                `${err instanceof Error ? err.message : String(err)}`,
-            );
-            return [] as SearchResult[];
-          }),
+          readKeyword(false),
           engine.searchTitles(query, searchOpts).catch((err: unknown) => {
             if (isDatetimeInputError(err)) throw err;
             if (isDbAccessFailure(err)) titleAccessError = err;
@@ -116,7 +116,15 @@ export async function runLexicalArms(req: HybridRequest): Promise<LexicalArms> {
   // FTS + title FTS); vector/relational arms are deliberately NOT marked.
   markKeywordHits(keywordResults);
   markKeywordHits(titleResults);
-  return { earlyModality, keywordResults, titleResults, exactLookupOpts };
+  const lexical: LexicalArms = { earlyModality, keywordResults, titleResults, exactLookupOpts,
+    completeKeywordFallback: async () => {
+      if (earlyModality === 'image' || keywordFailed || lexical.keywordResults.length || !searchOpts.orFallback) return;
+      lexical.keywordResults = await readKeyword(true);
+      if (keywordAccessError && titleAccessError) throw keywordAccessError;
+      markKeywordHits(lexical.keywordResults);
+    },
+  };
+  return lexical;
 }
 
 /** Post-fusion boost options shared by all three return paths. */

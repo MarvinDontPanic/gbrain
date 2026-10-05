@@ -82,8 +82,8 @@ beforeAll(async () => {
       { chunk_index: 0, chunk_text: truth, chunk_source: 'compiled_truth' },
     ]);
     await engine.executeRaw(
-      `UPDATE content_chunks SET embedding = $1::vector, model = $3, embedded_text_hash = md5(chunk_text) WHERE page_id = (SELECT id FROM pages WHERE slug = $2)`,
-      [vec, slug, 'openai:text-embedding-3-large'],
+      `UPDATE content_chunks SET embedding = $1::vector WHERE page_id = (SELECT id FROM pages WHERE slug = $2)`,
+      [vec, slug],
     );
   }
 });
@@ -300,5 +300,109 @@ describe('textVectorArmNonEmpty (pure, ROLE-based demotion gate — red-team bot
     });
     expect(lists.some((l) => l.k === ks.imageRrfK)).toBe(false);
     expect(lists.slice(0, 2).map((l) => l.k)).toEqual([ks.vectorK, ks.vectorK]);
+  });
+});
+
+
+describe('deferred relaxed keyword work', () => {
+  async function observe(
+    query: string,
+    outcome: 'healthy' | 'zero' | 'failed' | 'unavailable' | 'title-only' | 'image-only' | 'image-intent' | 'strict-failed',
+  ) {
+    const keyword = engine.searchKeyword.bind(engine);
+    const vector = engine.searchVector.bind(engine);
+    const calls: Array<{ orFallback: boolean | undefined; opts: unknown }> = [];
+    const phases: string[] = [];
+    const originalFetch = globalThis.fetch;
+    engine.searchKeyword = async (q, opts) => {
+      calls.push({ orFallback: opts?.orFallback, opts: { ...opts, onVectorPoolMeta: undefined } });
+      phases.push(`keyword:${opts?.orFallback}`);
+      if (outcome === 'strict-failed') throw new Error('fixture strict keyword failure');
+      return keyword(q, opts);
+    };
+    engine.searchVector = async (emb, opts) => {
+      phases.push('vector');
+      if (outcome === 'failed') throw new Error('fixture vector failure');
+      if (outcome === 'zero' || outcome === 'title-only') return [];
+      if ((outcome === 'image-only' || outcome === 'image-intent')) {
+        if (opts?.embeddingColumn !== 'embedding_image') return [];
+        return (await keyword('zephyr turbine', { limit: 5 })).map(r => ({ ...r, modality: 'image' as const }));
+      }
+      return vector(emb, opts);
+    };
+    if (outcome === 'unavailable') resetGateway();
+    if ((outcome === 'image-only' || outcome === 'image-intent')) {
+      configureGateway({
+        embedding_model: 'openai:text-embedding-3-large', embedding_dimensions: 1536,
+        embedding_multimodal_model: 'voyage:voyage-multimodal-3',
+        env: { OPENAI_API_KEY: 'sk-fake', VOYAGE_API_KEY: 'fixture-voyage-key' },
+      });
+      globalThis.fetch = Object.assign(async () => new Response(JSON.stringify({
+        data: [{ embedding: Array.from({ length: 1024 }, () => 0.1), index: 0 }],
+        model: 'voyage-multimodal-3',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }), { preconnect: originalFetch.preconnect });
+    }
+    try {
+      const rows = await hybridSearch(engine, query, {
+        limit: 10, salience: 'off', recency: 'off', expansion: false,
+        types: ['note'], sourceIds: ['default'], since: '2000-01-01', until: '2099-12-31',
+        crossModal: outcome === 'image-intent' ? 'image' : outcome === 'image-only' ? 'both' : 'text',
+        ...(outcome === 'unavailable' ? {} : { queryEmbedFn: () => fixedEmbedding() }),
+      });
+      return { rows, calls, phases };
+    } finally {
+      engine.searchKeyword = keyword;
+      engine.searchVector = vector;
+      globalThis.fetch = originalFetch;
+      configureGateway({ embedding_model: 'openai:text-embedding-3-large', embedding_dimensions: 1536, env: { OPENAI_API_KEY: 'sk-fake' } });
+    }
+  }
+
+  test('strict empty plus healthy text vector never runs discarded OR work', async () => {
+    const { rows, calls } = await observe('zephyr walrus', 'healthy');
+    expect(calls.map(c => c.orFallback)).toEqual([false]);
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every(r => !r.keyword_relaxed)).toBe(true);
+  });
+
+  test('strict keyword matches remain available without a second lookup', async () => {
+    const { rows, calls } = await observe('zephyr turbine', 'healthy');
+    expect(calls.map(c => c.orFallback)).toEqual([false]);
+    expect(rows.some(r => r.slug === 'notes/zephyr-report' && r.keyword_hit)).toBe(true);
+  });
+
+  for (const outcome of ['zero', 'failed', 'unavailable', 'title-only', 'image-only'] as const) {
+    test(`${outcome} text vector retains the actual relaxed keyword rescue and scope`, async () => {
+      const { rows, calls, phases } = await observe('zephyr walrus', outcome);
+      expect(calls.map(c => c.orFallback)).toEqual([false, true]);
+      expect(rows.some(r => r.keyword_relaxed)).toBe(true);
+      const first = calls[0].opts as Record<string, unknown>;
+      const second = calls[1].opts as Record<string, unknown>;
+      expect(second).toEqual({ ...first, orFallback: true });
+      if (outcome !== 'unavailable') expect(phases.indexOf('vector')).toBeLessThan(phases.indexOf('keyword:true'));
+    });
+  }
+
+  test('precision configuration does not enable OR even with no text vectors', async () => {
+    const before = await engine.getConfig('search.keywordOrFallback');
+    await engine.setConfig('search.keywordOrFallback', 'false');
+    try {
+      const { calls } = await observe('zephyr walrus', 'zero');
+      expect(calls.map(c => c.orFallback)).toEqual([false]);
+    } finally {
+      if (before === null) await engine.unsetConfig('search.keywordOrFallback');
+      else await engine.setConfig('search.keywordOrFallback', before);
+    }
+  });
+
+  test('explicit image intent still does not run a keyword lookup', async () => {
+    const { calls, rows } = await observe('zephyr walrus', 'image-intent');
+    expect(calls).toEqual([]);
+    expect(rows.length).toBeGreaterThan(0);
+  });
+
+  test('a real strict keyword failure is not retried as an OR rescue', async () => {
+    const { calls } = await observe('zephyr walrus', 'strict-failed');
+    expect(calls.map(c => c.orFallback)).toEqual([false]);
   });
 });

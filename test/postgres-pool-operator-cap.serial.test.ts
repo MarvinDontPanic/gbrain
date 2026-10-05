@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from 'bun:test';
-import postgres from 'postgres';
+import postgres from '#postgres';
 import { withEnv } from './helpers/with-env.ts';
 
 // Keep postgres.js's real constructor/options normalization, but intercept all
@@ -8,7 +8,7 @@ import { withEnv } from './helpers/with-env.ts';
 const realPostgres = postgres;
 let constructors = 0;
 let probes = 0;
-mock.module('postgres', () => ({
+mock.module('#postgres', () => ({
   default: Object.assign((url: string, options: Parameters<typeof postgres>[1]) => {
     constructors++;
     const pool = realPostgres(url, options);

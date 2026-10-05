@@ -1105,6 +1105,7 @@ export async function hybridSearch(
   // vector-arm query embedding without the gateway, so provider
   // availability is irrelevant — skip the keyword-only short-circuit.
   if (opts?.decide?.keywordOnly || (!opts?.queryEmbedFn && !isAvailable('embedding', providerProbe) && !willTryMultimodal)) {
+    await lexical.completeKeywordFallback();
     return searchWithoutEmbeddings(req, lexical, relationalList, postFusionOpts, providerProbe);
   }
 
@@ -1112,9 +1113,11 @@ export async function hybridSearch(
   const { vectorArms, queryEmbedding, imageQueryEmbedding, unifiedDone } =
     await runVectorArms(req, { effectiveModality, unifiedRouting, queries, multimodalProviderProbe });
   if (vectorArms.length === 0) {
+    await lexical.completeKeywordFallback();
     return searchVectorFallback(req, lexical, relationalList, postFusionOpts);
   }
 
+  if (!textVectorArmNonEmpty(vectorArms)) await lexical.completeKeywordFallback();
   const { fused, relaxedDropped, keywordArmConfidence, metadataBoostGate } = await fuseArms(req, {
     vectorArms, keywordResults: lexical.keywordResults, titleResults: lexical.titleResults, relationalList,
     effectiveModality, queryEmbedding, imageQueryEmbedding, unifiedDone, postFusionOpts,
@@ -1191,13 +1194,8 @@ export async function hybridSearchCached(
   // attempt it when the cache is enabled AND the gateway has an embedding
   // provider configured.
   let queryEmbedding: Float32Array | null = null;
-  // v0.42.20.0 (Fix 3, #1775) — ONE shared query-embed deadline for the
-  // cache-lookup embed below AND the inner hybridSearch embed (threaded via
-  // opts._queryEmbedDeadline). On a stalled provider the cache-lookup embed
-  // times out (→ cacheStatus 'disabled', fall through), then the inner embed
-  // sees the already-elapsed budget and fails fast → keyword fallback. Worst
-  // case ~one timeout (~6s), comfortably under the CLI 10s force-exit.
-  const queryEmbedDl = makeQueryEmbedDeadline();
+  // Lexical work does not consume the embedding budget; share it only after an embedding starts.
+  let queryEmbedDl: QueryEmbedDeadline | undefined;
   if (semanticCache && !skipCache) {
     try {
       const { isAvailable } = await import('../ai/gateway.ts');
@@ -1207,6 +1205,7 @@ export async function hybridSearchCached(
       // so this is the default embeddingModel — but threading it keeps
       // the provider probe consistent with the bare hybridSearch path.
       if (isAvailable('embedding', semanticCache.providerProbe)) {
+        queryEmbedDl = makeQueryEmbedDeadline();
         // v0.35.0.0+: query-side embedding (cache lookup path).
         // v0.42.20.0 (Fix 3) — bounded by the shared deadline; on timeout this
         // throws → caught below → cacheStatus 'disabled' → falls through to the
