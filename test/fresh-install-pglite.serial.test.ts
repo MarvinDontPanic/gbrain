@@ -55,11 +55,16 @@ describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end'
     'AZURE_OPENAI_API_KEY',
   ] as const;
   const savedKeys: Record<string, string | undefined> = {};
+  let scrubKeys: string[] = [];
 
   beforeEach(() => {
     tmpHome = mkdtempSync(join(tmpdir(), 'gbrain-e2e-fresh-'));
     origHome = process.env.GBRAIN_HOME;
-    for (const k of SCRUB_KEYS) {
+    // Keyless means no host API-key-shaped inputs, including unknown names
+    // that the native typo guard must inspect rather than silently ignore.
+    scrubKeys = [...new Set([...SCRUB_KEYS, ...Object.keys(process.env)
+      .filter(k => /^[A-Z][A-Z0-9_]*_(API_)?KEY$/.test(k))])];
+    for (const k of scrubKeys) {
       savedKeys[k] = process.env[k];
       delete process.env[k];
     }
@@ -72,7 +77,7 @@ describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end'
     rmSync(tmpHome, { recursive: true, force: true });
     if (origHome === undefined) delete process.env.GBRAIN_HOME;
     else process.env.GBRAIN_HOME = origHome;
-    for (const k of SCRUB_KEYS) {
+    for (const k of scrubKeys) {
       if (savedKeys[k] === undefined) delete process.env[k];
       else process.env[k] = savedKeys[k];
     }
