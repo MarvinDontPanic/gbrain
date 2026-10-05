@@ -66,6 +66,7 @@
 
 import type { BrainEngine, NewFact } from '../core/engine.ts';
 import type { Page } from '../core/types.ts';
+import { isPrivatePage } from '../core/search/private-visibility.ts';
 import {
   extractFactsFromTurnWithOutcome,
   isFactsExtractionEnabled,
@@ -944,6 +945,7 @@ async function processPage(
   sinceIso: string | undefined,
 ): Promise<{ newEndIso: string | null }> {
   const { page, body } = snapshot;
+  const privateParent = isPrivatePage(page);
   state.result.pages_considered++;
 
   // Body cap check first — pre-parse, pre-segment, pre-extraction.
@@ -1049,12 +1051,12 @@ async function processPage(
       if (await snapshotIsCurrent(state.engine, state.sourceId, snapshot)) {
         if (state.managed) {
           await replacePageFacts(state, snapshot, async tx => [
-            nonExtractableAuditFact(page.slug, await peekRowNumStart(tx, state.sourceId, page.slug), snapshot.versionToken, reason),
+            nonExtractableAuditFact(page.slug, await peekRowNumStart(tx, state.sourceId, page.slug), snapshot.versionToken, reason, privateParent ? 'private' : undefined),
           ]);
         } else {
           state.result.orphan_facts_cleaned += await deleteOrphanFactsForPage(state.engine, state.sourceId, page.slug);
           const rowNum = await peekRowNumStart(state.engine, state.sourceId, page.slug);
-          await writeDerivedFacts(state.engine, state.sourceId, page.slug, db => db.insertFacts([nonExtractableAuditFact(page.slug, rowNum, snapshot.versionToken, reason)], { source_id: state.sourceId })); // gbrain-allow-direct-insert: durable non-extractable audit outcome prevents repeated scans while remaining distinct from successful extraction
+          await writeDerivedFacts(state.engine, state.sourceId, page.slug, db => db.insertFacts([nonExtractableAuditFact(page.slug, rowNum, snapshot.versionToken, reason, privateParent ? 'private' : undefined)], { source_id: state.sourceId })); // gbrain-allow-direct-insert: durable non-extractable audit outcome prevents repeated scans while remaining distinct from successful extraction
         }
         state.result.pages_marked_non_extractable++;
       }
@@ -1165,6 +1167,8 @@ async function processPage(
       // the same issue) is superseded rather than layered on top.
       const rows = extracted.map((fact, i) => ({
         ...fact,
+        // Derived facts cannot widen their source conversation's visibility.
+        ...(privateParent ? { visibility: 'private' as const } : {}),
         row_num: rowNum + i,
         source_markdown_slug: page.slug,
         source: PER_SEGMENT_SOURCE_PREFIX,
@@ -1209,7 +1213,7 @@ async function processPage(
     // failure so bulk accounting, CLI exit status, cycle status, and rollups all
     // report the page as unfinished. A managed brain publishes it with the
     // page's facts in one transaction.
-    const terminal = terminalAuditFact(page.slug, rowNum, snapshot.versionToken);
+    const terminal = terminalAuditFact(page.slug, rowNum, snapshot.versionToken, privateParent ? 'private' : undefined);
     if (state.managed) managedRows.push(terminal);
     else await writeDerivedFacts(state.engine, state.sourceId, page.slug, db => db.insertFacts([terminal], { source_id: state.sourceId })); // gbrain-allow-direct-insert: page-level TERMINAL audit row (Codex C7 / E16) marks extraction completion in the durable facts table — there's no fence equivalent because this is internal audit state, not user-facing knowledge
     rowNum++;
@@ -1251,6 +1255,7 @@ function terminalAuditFact(
   slug: string,
   rowNum: number,
   versionToken: string,
+  visibility?: NewFact['visibility'],
 ): NewFact & { row_num: number; source_markdown_slug: string } {
   return {
     fact: 'EXTRACTION_COMPLETE',
@@ -1262,6 +1267,7 @@ function terminalAuditFact(
     notability: 'low',
     row_num: rowNum,
     source_markdown_slug: slug,
+    ...(visibility ? { visibility } : {}),
   };
 }
 
@@ -1270,6 +1276,7 @@ function nonExtractableAuditFact(
   rowNum: number,
   versionToken: string,
   reason: string,
+  visibility?: NewFact['visibility'],
 ): NewFact & { row_num: number; source_markdown_slug: string } {
   return {
     fact: 'EXTRACTION_NOT_APPLICABLE',
@@ -1286,6 +1293,7 @@ function nonExtractableAuditFact(
     context: `scanned, not extractable: ${reason}`,
     row_num: rowNum,
     source_markdown_slug: slug,
+    ...(visibility ? { visibility } : {}),
   };
 }
 

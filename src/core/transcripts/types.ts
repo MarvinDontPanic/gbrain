@@ -90,6 +90,8 @@ export interface ParseSessionsOpts {
    * read, so an over-budget rollout still imports.
    */
   maxBytes?: number;
+  /** Exact source-native origins to include in multi-session stores. */
+  sessionSources?: string[];
 }
 
 export interface TranscriptAdapter {
@@ -102,7 +104,7 @@ export interface TranscriptAdapter {
 
 // ── Byte caps (format-specific; see adapter headers) ────────────────────────
 
-/** Hard cap for any single session-log file. */
+/** Default budget for bounded hook readers; archive JSONL imports stream fully. */
 export const TRANSCRIPT_JSONL_HARD_CAP = 50 * 1024 * 1024;
 /**
  * Monolithic consumer-export JSON cannot be partially parsed — over this the

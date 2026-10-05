@@ -92,7 +92,7 @@ describe('render round-trip through the SHARED imessage-slack pattern', () => {
     expect(fm.id).toMatch(/-p1$/);
     expect(fm.transcript_import.harness).toBe('codex');
     expect(fm.transcript_import.session_id).toBe('render-test-session-1');
-    expect(fm.transcript_import.version).toBe(1);
+    expect(fm.transcript_import.version).toBe(2);
     expect(fm.transcript_import.part).toBe(1);
     expect(fm.transcript_import.of).toBe(1);
     // Never the dream marker — that would suppress fact extraction.

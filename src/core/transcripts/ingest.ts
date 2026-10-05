@@ -65,10 +65,12 @@ export interface TranscriptsIngestOpts {
   /**
    * gbrain#4149: explicit byte-cap OVERRIDE threaded to every adapter's
    * parse. Undefined = each adapter keeps its own format-specific default
-   * (Hermes 512MB store guard, 50MB jsonl cap, ...) — the override exists
+   * (native indexed SQLite and complete streamed JSONL imports, ...) — the override exists
    * for legitimate oversized stores, not to replace the defaults.
    */
   maxBytes?: number;
+  /** Optional exact source-native session origins (distinct from brain sources). */
+  sessionSources?: string[];
   activePack?: IngestActivePack;
   /** Test seam for the redaction user-pattern file. */
   userPatternsPath?: string;
@@ -154,6 +156,23 @@ function lastMessageTs(messages: Array<{ timestamp: string }>): string {
 
 const RUN_ABORT_MARKER = 'transcripts-ingest run abort';
 
+/** Native transcript identity is scoped to its brain source, never a slug date. */
+async function readTranscriptParts(engine: BrainEngine, sourceId: string, harness: TranscriptFormat, sessionId: string) {
+  try {
+    return await engine.executeRaw<{ slug: string; part: string }>(
+      `SELECT slug, frontmatter->'transcript_import'->>'part' AS part FROM pages
+       WHERE source_id = $1 AND deleted_at IS NULL
+         AND frontmatter->'transcript_import'->>'harness' = $2
+         AND frontmatter->'transcript_import'->>'session_id' = $3`,
+      [sourceId, harness, sessionId],
+    );
+  } catch (error) {
+    throw new Error(`${RUN_ABORT_MARKER}: canonical transcript identity lookup failed: ${
+      error instanceof Error ? error.message : String(error)
+    }`, { cause: error });
+  }
+}
+
 function isPerSessionImportError(err: unknown): boolean {
   // 'invalid byte sequence' is Postgres rejecting the DATA (e.g. a U+0000 a
   // sanitizer missed, #4392) — one bad session, never a DB-down signal.
@@ -223,15 +242,18 @@ export async function runTranscriptsIngest(
 
     // gbrain#4149: thread the explicit cap override; omit the opts object
     // entirely when unset so adapters keep their native defaults.
-    const gen = opts.maxBytes != null
-      ? detected.adapter.parse(path, { maxBytes: opts.maxBytes })
+    const gen = opts.maxBytes != null || opts.sessionSources !== undefined
+      ? detected.adapter.parse(path, {
+          ...(opts.maxBytes != null ? { maxBytes: opts.maxBytes } : {}),
+          ...(opts.sessionSources !== undefined ? { sessionSources: opts.sessionSources } : {}),
+        })
       : detected.adapter.parse(path);
+    let initiatingError: unknown;
     try {
       let step = await gen.next();
       while (!step.done) {
         if (limitTruncated) {
-          // Stop consuming; the generator's finally blocks clean up.
-          await gen.return?.(undefined as never);
+          // The unconditional close below runs the generator's finally.
           break;
         }
         const session = step.value;
@@ -252,7 +274,6 @@ export async function runTranscriptsIngest(
         if (opts.limit !== undefined && newWorkSessions >= opts.limit) {
           limitTruncated = true;
           result.cleanScan = false;
-          await gen.return?.(undefined as never);
           break;
         }
 
@@ -298,18 +319,42 @@ export async function runTranscriptsIngest(
             // path would import.
             newWorkSessions++;
           } else {
-            // The RESOLVED base slug: identity dedup can resolve part 1 to an
-            // EXISTING page under a different slug (same session id, changed
-            // title or corrected start date) — raw-data writes and stale-part
-            // reconciliation must follow the page that actually exists, or
-            // every re-run aborts on a nonexistent slug.
-            await adoptExistingBaseSlug(engine, opts.sourceId ?? 'default', rendered);
-            outcome.baseSlug = rendered.baseSlug;
+            // Resolve native identities BEFORE importing. The general importer
+            // intentionally skips cross-slug external-ID duplicates, even when
+            // their bodies changed; asking it to discover our canonical slug
+            // would therefore silently keep stale transcript text.
+            const existingParts = await readTranscriptParts(
+              engine, opts.sourceId, redacted.session.meta.harness, redacted.session.meta.sessionId,
+            );
+            // Retain upstream's external-ID adoption for legacy pages without
+            // transcript_import metadata; native identities remain authoritative.
+            if (existingParts.length === 0) await adoptExistingBaseSlug(engine, opts.sourceId, rendered);
+            const partSlugs = new Map<number, string>();
+            for (const row of existingParts) {
+              const number = Number(row.part);
+              if (!Number.isInteger(number) || number < 1 || partSlugs.has(number)) {
+                throw new Error(`${RUN_ABORT_MARKER}: ambiguous canonical transcript part identity`);
+              }
+              partSlugs.set(number, row.slug);
+            }
             let resolvedBaseSlug = rendered.baseSlug;
+            if (partSlugs.has(1)) resolvedBaseSlug = partSlugs.get(1)!;
+            else if (partSlugs.size) {
+              // A crash/deletion may leave later parts but no base. Their
+              // native suffix preserves the original base for resurrection.
+              const [number, slug] = [...partSlugs.entries()].sort(([a], [b]) => a - b)[0];
+              const suffix = `-p${number}`;
+              if (!slug.endsWith(suffix)) throw new Error(`${RUN_ABORT_MARKER}: missing canonical transcript base identity`);
+              resolvedBaseSlug = slug.slice(0, -suffix.length);
+            }
+            outcome.baseSlug = resolvedBaseSlug;
             for (const part of rendered.parts) {
+              const partSlug = partSlugs.get(part.part) ??
+                (part.part === 1 ? resolvedBaseSlug : `${resolvedBaseSlug}-p${part.part}`);
               try {
+                part.slug = partSlug;
                 await preserveForeignFrontmatter(engine, opts.sourceId ?? 'default', part);
-                const r = await importFromContent(engine, part.slug, part.content, {
+                const r = await importFromContent(engine, partSlug, part.content, {
                   noEmbed: !opts.embed,
                   sourceId: opts.sourceId,
                   activePack: opts.activePack,
@@ -321,13 +366,15 @@ export async function runTranscriptsIngest(
                 if (r.status === 'imported') result.pages.imported++;
                 else if (r.status === 'skipped') result.pages.skipped++;
                 else result.pages.errored++;
-                const actualSlug = r.slug || part.slug;
-                if (part.part === 1 && actualSlug) resolvedBaseSlug = actualSlug;
+                const actualSlug = r.slug || partSlug;
+                if (actualSlug !== partSlug) {
+                  throw new Error('canonical transcript identity changed during import');
+                }
                 result.slugsTouched.push(actualSlug);
               } catch (err) {
                 if (isPerSessionImportError(err)) throw err; // → per-session catch
                 const e = new Error(
-                  `${RUN_ABORT_MARKER}: import integrity failure on ${part.slug}: ${
+                  `${RUN_ABORT_MARKER}: import integrity failure on ${partSlug}: ${
                     err instanceof Error ? err.message : String(err)
                   }`,
                 );
@@ -408,16 +455,12 @@ export async function runTranscriptsIngest(
             // holes that a first-miss or bounded-miss probe walks past) and
             // run on EVERY pass including all-skipped re-runs, because a
             // prior run can have died between the page writes and this step.
-            const partRows = await engine.executeRaw<{ slug: string }>(
-              `SELECT slug FROM pages
-               WHERE source_id = $1 AND deleted_at IS NULL AND slug LIKE $2`,
-              [opts.sourceId, `${resolvedBaseSlug}-p%`],
+            const partRows = await readTranscriptParts(
+              engine, opts.sourceId, redacted.session.meta.harness, redacted.session.meta.sessionId,
             );
             for (const row of partRows) {
-              const suffix = row.slug.slice(resolvedBaseSlug.length);
-              const m = /^-p(\d+)$/.exec(suffix);
-              const num = m ? Number(m[1]) : NaN;
-              if (Number.isFinite(num) && num > rendered.parts.length) {
+              const num = Number(row.part);
+              if (Number.isInteger(num) && num > rendered.parts.length) {
                 await engine.deletePage(row.slug, { sourceId: opts.sourceId });
                 result.partsDeleted++;
               }
@@ -442,7 +485,7 @@ export async function runTranscriptsIngest(
           fileOutcome.drift = true;
           result.driftFiles++;
           // A drifting file may hold sessions a fixed parser will surface
-          // later (torn hermes copy, transient format break) — the shared
+          // later (native store schema drift, transient format break) — the shared
           // watermark must not advance past it. expectedEmpty (a grok
           // tool/reasoning-only session) is understood, not drifted.
           result.cleanScan = false;
@@ -464,10 +507,27 @@ export async function runTranscriptsIngest(
         }
       }
     } catch (err) {
+      initiatingError = err;
       if (err instanceof Error && err.message.startsWith(RUN_ABORT_MARKER)) throw err;
       fileOutcome.error = err instanceof Error ? err.message : String(err);
       result.erroredFiles++;
       result.cleanScan = false;
+    } finally {
+      // Manual next() consumption does not provide for-await's IteratorClose.
+      // Release native resources after success, cancellation AND downstream
+      // engine errors, including run-level aborts which rethrow above.
+      try {
+        await gen.return?.(undefined as never);
+      } catch (cleanupError) {
+        const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        if (initiatingError !== undefined) {
+          const originalMessage = initiatingError instanceof Error ? initiatingError.message : String(initiatingError);
+          throw new AggregateError([initiatingError, cleanupError],
+            `${RUN_ABORT_MARKER}: ${originalMessage}; adapter cleanup also failed: ${cleanupMessage}`,
+            { cause: initiatingError });
+        }
+        throw new Error(`${RUN_ABORT_MARKER}: adapter cleanup failed: ${cleanupMessage}`, { cause: cleanupError });
+      }
     }
 
     done++;

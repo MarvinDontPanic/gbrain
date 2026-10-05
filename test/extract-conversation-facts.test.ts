@@ -11,7 +11,7 @@
  *   - Per-test state reset via TRUNCATE inside beforeEach (canonical pattern)
  */
 
-import { describe, expect, test, beforeAll, afterAll, beforeEach } from 'bun:test';
+import { describe, expect, test, beforeAll, afterAll, beforeEach, spyOn } from 'bun:test';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -574,6 +574,112 @@ describe('runExtractConversationFactsCore', () => {
     } finally {
       (process.stderr as unknown as { write: unknown }).write = origWrite;
     }
+  });
+
+  test('private conversation facts cannot be widened by extractor output and stay hidden from remote recall', async () => {
+    const slug = 'conversations/private-derived-example';
+    await engine.putPage(slug, {
+      type: 'conversation', title: 'Private planning conversation',
+      compiled_truth: SAMPLE_BODY, timeline: '', frontmatter: { visibility: 'private' },
+    });
+    let calls = 0;
+    const insertFacts = spyOn(engine, 'insertFacts');
+    let result;
+    try {
+      result = await runExtractConversationFactsCore(engine, {
+        sourceId: 'default', slug, sleepMs: 0,
+        extractor: async () => {
+          calls++;
+          return [
+            { fact: `Private-derived marker ${calls} explicit world`, kind: 'fact', source: 'test', entity_slug: null, visibility: 'world', confidence: 1 },
+            { fact: `Private-derived marker ${calls} unset`, kind: 'fact', source: 'test', entity_slug: null, confidence: 1 },
+          ];
+        },
+      });
+      const submitted = insertFacts.mock.calls.flatMap(([rows]) => rows);
+      expect(submitted).toHaveLength(5);
+      expect(submitted.every(row => row.visibility === 'private')).toBe(true);
+    } finally {
+      insertFacts.mockRestore();
+    }
+    expect(result.pages_processed).toBe(1);
+    expect(result.facts_inserted).toBe(4);
+    const rows = await engine.executeRaw<{ visibility: string; source: string; source_markdown_slug: string }>(
+      'SELECT visibility, source, source_markdown_slug FROM facts WHERE source_markdown_slug=$1 ORDER BY row_num', [slug],
+    );
+    expect(rows).toHaveLength(5);
+    expect(rows.every(row => row.visibility === 'private')).toBe(true);
+    expect(rows.every(row => row.source_markdown_slug === slug)).toBe(true);
+    expect(rows.at(-1)!.source).toBe(TERMINAL_AUDIT_SOURCE);
+    const { operationsByName } = await import('../src/core/operations.ts');
+    const ctx = {
+      engine, sourceId: 'default', remote: true, config: { engine: 'pglite' }, dryRun: false,
+      logger: { info() {}, warn() {}, error() {} },
+    } as Parameters<typeof operationsByName.recall.handler>[0];
+    const params = { session_id: `${PER_SEGMENT_SOURCE_PREFIX}:${slug}` };
+    const remote = await operationsByName.recall.handler(ctx, params) as { facts: unknown[] };
+    expect(remote.facts).toEqual([]);
+    const local = await operationsByName.recall.handler({ ...ctx, remote: false }, params) as {
+      facts: Array<{ fact: string; visibility: string }>;
+    };
+    expect(local.facts).toHaveLength(4);
+    expect(local.facts.every(fact => fact.fact.startsWith('Private-derived marker') && fact.visibility === 'private')).toBe(true);
+    expect(mainChatCalls).toBe(0);
+  });
+
+  test('non-private conversations retain extractor visibility and native insertion defaults', async () => {
+    for (const frontmatter of [{}, { visibility: 'world' }]) {
+      const slug = `conversations/visibility-control-${'visibility' in frontmatter ? 'world' : 'unset'}`;
+      await engine.putPage(slug, {
+        type: 'conversation', title: 'Visibility control', compiled_truth: SAMPLE_BODY,
+        timeline: '', frontmatter,
+      });
+      let calls = 0;
+      await runExtractConversationFactsCore(engine, {
+        sourceId: 'default', slug, sleepMs: 0,
+        extractor: async () => {
+          calls++;
+          return [
+            { fact: `World fact ${calls}`, kind: 'fact', source: 'test', entity_slug: null, visibility: 'world', confidence: 1 },
+            { fact: `Private fact ${calls}`, kind: 'fact', source: 'test', entity_slug: null, visibility: 'private', confidence: 1 },
+            { fact: `Default fact ${calls}`, kind: 'fact', source: 'test', entity_slug: null, confidence: 1 },
+          ];
+        },
+      });
+      const rows = await engine.executeRaw<{ visibility: string }>(
+        'SELECT visibility FROM facts WHERE source_markdown_slug=$1 ORDER BY row_num', [slug],
+      );
+      expect(rows.map(row => row.visibility)).toEqual([
+        'world', 'private', 'private', 'world', 'private', 'private', 'private',
+      ]);
+    }
+  });
+
+  test('private non-extractable conversations retain private audit provenance', async () => {
+    const slug = 'conversations/private-single-turn';
+    await engine.putPage(slug, {
+      type: 'conversation', title: 'Private single turn',
+      compiled_truth: '**Speaker** (2026-06-01 09:00): Private one-turn marker.',
+      timeline: '', frontmatter: { visibility: 'private' },
+    });
+    const insertFacts = spyOn(engine, 'insertFacts');
+    let result;
+    try {
+      result = await runExtractConversationFactsCore(engine, {
+        sourceId: 'default', slug, sleepMs: 0,
+      });
+      const submitted = insertFacts.mock.calls.flatMap(([rows]) => rows);
+      expect(submitted).toHaveLength(1);
+      expect(submitted[0]!.visibility).toBe('private');
+    } finally {
+      insertFacts.mockRestore();
+    }
+    expect(result.pages_marked_non_extractable).toBe(1);
+    const rows = await engine.executeRaw<{ visibility: string; source: string; source_markdown_slug: string }>(
+      'SELECT visibility, source, source_markdown_slug FROM facts WHERE source_markdown_slug=$1', [slug],
+    );
+    expect(rows).toEqual([{ visibility: 'private', source: NON_EXTRACTABLE_AUDIT_SOURCE, source_markdown_slug: slug }]);
+    expect(mainChatCalls).toBe(0);
   });
 
   test('#5364 speaker objects preserve provenance and isolate same-slug sources', async () => {

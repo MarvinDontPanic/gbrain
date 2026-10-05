@@ -51,7 +51,7 @@ export const MESSAGE_ANCHOR_RE: RegExp = IMESSAGE_SLACK.regex;
 /** Date-heading shapes some builtins treat as day boundaries — escaped too. */
 const DATE_HEADING_RE = /^#{1,6}\s*\d{4}-\d{2}-\d{2}\b/;
 
-/** ~4K chars per message keeps pages readable; full text stays in source_uri. */
+/** Maximum characters per message fragment; every fragment is retained. */
 export const MESSAGE_CHAR_CAP = 4000;
 
 /**
@@ -76,7 +76,7 @@ export const PART_TARGET_BYTES = Math.floor(DEFAULT_BYTES_WARN * 0.9);
 export const OVERLAP_MESSAGES = 2;
 
 /** Adapter-schema version stamped into transcript_import frontmatter. */
-export const TRANSCRIPT_IMPORT_VERSION = 1;
+export const TRANSCRIPT_IMPORT_VERSION = 2;
 
 // ── Redaction ────────────────────────────────────────────────────────────────
 
@@ -252,8 +252,8 @@ export function escapeAnchorLines(text: string): string {
  * Neutralize QUOTED facts/takes fence markers in a message body:
  * `gbrain:facts:begin` → `gbrain\:facts:begin`. A session that read another
  * page (context pack, get_page) quotes that page's `<!--- gbrain:facts:begin -->`
- * verbatim, and the per-message char cap routinely keeps the begin marker
- * while dropping the end — a live, unbalanced fence on a transcript page that
+ * verbatim, and page splitting can separate the begin marker
+ * from the end — a live, unbalanced fence on a transcript page that
  * has no fence (FACTS_FENCE_UNBALANCED on every dream cycle), or a quoted
  * fence indexed as the transcript's own facts. Every fence consumer is an
  * exact-substring matcher on the marker token, so the backslash lands INSIDE
@@ -332,15 +332,27 @@ export function renderSessionParts(
   // collision-proof across harnesses, days, and fallback session ids).
   const identityBase = `${meta.harness}-${transcriptFullId(meta.sessionId)}`;
 
-  // One rendered block per message (anchor line + escaped continuation).
+  // Fragment long messages, never truncate them. Escape the complete text
+  // first so splitting cannot turn a quoted anchor/facts fence into live syntax.
   let lastTs = firstTs;
-  const blocks: string[] = messages.map((m) => {
+  const blocks: string[] = messages.flatMap((m) => {
     const ts = m.timestamp || lastTs;
     lastTs = ts;
-    const text = escapeFenceMarkers(escapeAnchorLines(truncateUtf8(m.text, MESSAGE_CHAR_CAP)));
-    const [head, ...rest] = text.split('\n');
-    const anchor = `**${speakerLabel(m)}** (${anchorTimestamp(ts)}): ${head}`;
-    return rest.length ? `${anchor}\n${rest.join('\n')}` : anchor;
+    const text = escapeFenceMarkers(escapeAnchorLines(m.text));
+    const fragments: string[] = [];
+    let offset = 0;
+    do {
+        let fragment = truncateUtf8(text.slice(offset), MESSAGE_CHAR_CAP);
+        if (offset + fragment.length < text.length) {
+          const boundary = Math.max(fragment.lastIndexOf('\n'), fragment.lastIndexOf(' '));
+          if (boundary >= MESSAGE_CHAR_CAP / 2) fragment = fragment.slice(0, boundary + 1);
+        }
+      const [head, ...rest] = fragment.split('\n');
+      const anchor = `**${speakerLabel(m)}** (${anchorTimestamp(ts)}): ${head}`;
+      fragments.push(rest.length ? `${anchor}\n${rest.join('\n')}` : anchor);
+      offset += fragment.length;
+    } while (offset < text.length);
+    return fragments;
   });
 
   // Split at message boundaries under the part target, with overlap.
@@ -370,6 +382,7 @@ export function renderSessionParts(
     const frontmatterId = `${identityBase}-p${part}`;
     const fm: Record<string, unknown> = {
       type: 'conversation',
+      visibility: 'private',
       title: of > 1 ? `${title} (part ${part} of ${of})` : title,
       date: dateIso.slice(0, 10),
       id: frontmatterId,

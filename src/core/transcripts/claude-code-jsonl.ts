@@ -35,6 +35,7 @@ import { detectWslMountRoot, translateWindowsPath } from '../wsl-paths.ts';
 import { stripPastedContent } from './pasted-content.ts';
 import { claudeProjectsDir, type HostSpecTarget } from '../bootstrap/host-specs.ts';
 import type { WindowTurn } from '../context/entity-salience.ts';
+import { streamJsonlLines } from './jsonl-lines.ts';
 
 // ── Spec target [ENG-7 discipline, G3/A6] ───────────────────────────────────
 
@@ -615,27 +616,25 @@ export interface ParsedClaudeSession {
 }
 
 /**
- * Full-file parse for imports: unlike `parseTranscript`, this NEVER
- * tail-reads (the slug date needs the session start) — a file over
- * `maxBytes` throws so the caller can reject it loudly. One .jsonl file is
- * one Claude Code session.
+ * Stream every record for imports, unlike the hook's `parseTranscript` tail
+ * window. Only an EXPLICIT `maxBytes` rejects oversized input; default imports
+ * retain complete history and the original start. One file is one session.
  */
 export function parseClaudeSessionFile(
   path: string,
   opts: { maxBytes?: number } = {},
 ): ParsedClaudeSession {
-  const cap = Math.max(1, Math.floor(opts.maxBytes ?? TRANSCRIPT_HARD_CAP_BYTES));
+  const cap = opts.maxBytes === undefined ? undefined : Math.max(1, Math.floor(opts.maxBytes));
   const size = statSync(path).size;
-  if (size > cap) {
+  if (cap !== undefined && size > cap) {
     throw new Error(`transcript too large for import: ${size} bytes (cap ${cap})`);
   }
-  const raw = readFileSync(path, 'utf8');
   const turns: TimedTurn[] = [];
   let sessionId = '';
   let cwd: string | undefined;
   let skippedLines = 0;
   let turnShapedLines = 0;
-  for (const line of raw.split('\n')) {
+  for (const line of streamJsonlLines(path, size)) {
     const t = line.trim();
     if (!t) continue;
     let entry: unknown;

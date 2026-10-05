@@ -14,7 +14,7 @@
  * text only (lossy by design).
  */
 
-import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
+import { closeSync, openSync, readSync, statSync } from 'node:fs';
 import { basename } from 'node:path';
 import type { HostSpecTarget } from '../bootstrap/host-specs.ts';
 import type {
@@ -24,7 +24,8 @@ import type {
   TranscriptAdapter,
   TranscriptMessage,
 } from './types.ts';
-import { TRANSCRIPT_JSONL_HARD_CAP, utcTimestamp } from './types.ts';
+import { utcTimestamp } from './types.ts';
+import { streamJsonlLines } from './jsonl-lines.ts';
 
 /**
  * Head window kept when a rollout exceeds the parse budget. Only needs to
@@ -162,23 +163,17 @@ export const codexAdapter: TranscriptAdapter = {
   },
 
   async *parse(path: string, opts: ParseSessionsOpts = {}): AsyncGenerator<ParsedSession, FileDiagnostics> {
-    const budget = Math.max(1, Math.floor(opts.maxBytes ?? TRANSCRIPT_JSONL_HARD_CAP));
+    const budget = opts.maxBytes === undefined ? undefined : Math.max(1, Math.floor(opts.maxBytes));
     const size = statSync(path).size;
-    let raw: string;
+    let lines: Iterable<string>;
     let bytesRead: number;
     let truncated = false;
-    if (size <= budget) {
-      raw = readFileSync(path, 'utf8');
+    if (budget === undefined || size <= budget) {
+      lines = streamJsonlLines(path, size);
       bytesRead = size;
     } else {
-      // Bounded degrade rather than rejecting the file: the read stays within
-      // budget, but a huge rollout still contributes its session.
-      //
-      // NOTE: this is NOT "what the claude-code adapter does". That adapter's
-      // import path (parseClaudeSessionFile) throws over cap like the others;
-      // only the hook lane's parseTranscript tail-reads. Oversized *claude*
-      // sessions still contribute nothing — this adapter is the first to
-      // degrade, which is a deliberate divergence, not parity.
+      // An EXPLICIT preview budget retains bounded head+tail semantics. Default
+      // imports stream every record; this preview is reported as incomplete.
       //
       // HEAD + TAIL, not tail alone: `session_meta` — session_id, cwd,
       // cli_version, provenance — is the FIRST record of a rollout (verified:
@@ -195,7 +190,7 @@ export const codexAdapter: TranscriptAdapter = {
         const tn = readSync(fd, tbuf, 0, tail, size - tail);
         // The join is a line boundary neither side owns; both partials fail
         // JSON.parse and land in skippedLines, which is the honest accounting.
-        raw = hbuf.subarray(0, hn).toString('utf8') + '\n' + tbuf.subarray(0, tn).toString('utf8');
+        lines = (hbuf.subarray(0, hn).toString('utf8') + '\n' + tbuf.subarray(0, tn).toString('utf8')).split('\n');
         bytesRead = hn + tn;
       } finally {
         closeSync(fd);
@@ -208,7 +203,7 @@ export const codexAdapter: TranscriptAdapter = {
     const messages: TranscriptMessage[] = [];
     let rawMeta: Record<string, unknown> | undefined;
 
-    for (const line of raw.split('\n')) {
+    for (const line of lines) {
       const t = line.trim();
       if (!t) continue;
       let entry: unknown;

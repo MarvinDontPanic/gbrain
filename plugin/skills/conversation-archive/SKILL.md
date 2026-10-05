@@ -71,8 +71,9 @@ formats:
 
 ```
 gbrain transcripts ingest ~/Downloads/conversations.json   # unzip first
-gbrain transcripts ingest                                  # discover harness logs
-gbrain transcripts ingest --max-bytes 4gb <store>          # oversized store (omit = per-format caps)
+gbrain transcripts ingest --all                            # import discovered harness logs
+gbrain transcripts ingest --max-bytes 4gb <store>          # explicit oversized SQLite/export-store budget
+gbrain transcripts ingest --all --session-source slack --embed  # retained local history; Hermes Slack only
 gbrain transcripts status                                  # found vs imported gaps
 ```
 
@@ -92,11 +93,13 @@ still applies to sensitive corpora. Preview what will be scrubbed with
 `--dry-run` before a bulk `--all`. If a secret still reached a page, rotate
 it first, then remove the page immediately with
 `gbrain delete <slug> --purge` (local CLI only — no 72h tombstone); the
-brain-repo git history or a synced file may still hold it. Two more deltas: the
-native lane caps each message at ~4K characters in the page body (readable
-archive, not verbatim — the session file named in `source_uri` stays the
-verbatim record), and tool/thinking traffic appears only as one-line
-placeholders. Providers without a native adapter (e.g. Perplexity) keep
+brain-repo git history or a synced file may still hold it. Native Claude Code/Codex imports stream the complete captured JSONL file by default; explicit
+`--max-bytes` remains a bounded diagnostic/import choice. Long message text is
+retained in anchored fragments and searchable part pages, never clipped. Pages
+are private by default; trusted local CLI retrieval can read them, while MCP
+cannot. Private parents also force derived facts private. Tool/thinking traffic
+is excluded or represented by adapter-native placeholders; the original
+`source_uri` is evidence for raw tool records, not a claim they were indexed. Providers without a native adapter (e.g. Perplexity) keep
 using the manual conversion below.
 
 ## Where Conversations Live
@@ -283,6 +286,33 @@ For ongoing session capture, schedule the archive + gap-heal via
 [minion-orchestrator](../minion-orchestrator/SKILL.md). Scheduling is a
 routing convention the user sets up — nothing fires mechanically just because
 this skill exists; say so when proposing it.
+
+## Ongoing native local capture
+
+Use the same native command for the initial catch-up and every scheduled run:
+
+```bash
+gbrain transcripts ingest --all --session-source slack --embed --json --quiet
+```
+
+`--session-source` selects exact native Hermes session origins (repeat to include
+more); it is distinct from `--source`, which selects a brain repository. Other
+adapters retain their native human/self/subagent selection. Hermes reads its
+live SQLite store through one native read transaction, not copied DB/WAL files
+or a whole-store default byte cap. Explicit diagnostic budgets remain enforced.
+
+Do not use `--since last` as the completeness boundary for retained history:
+resumed conversations, changed older records and late-arriving old logs must be
+reconsidered. The native content hash skips unchanged pages; this is a complete
+rescan, not a second importer. A real partial/error/truncated scan exits nonzero
+and must not be reported as complete. `--dry-run` previews without writing.
+
+Schedule only after verifying the native command on this host. Use the runtime's
+own persistent scheduler and a script-only job at the operator's chosen cadence.
+Keep the thin command in its owning repository; the runtime-private script only
+delegates to it. No archive-backup dependency, extra hooks, private runtime-state
+in Portable, or new distribution schema is required. Embeddings use the already
+configured provider; recurring paid fact extraction remains a separate opt-in.
 
 ## Session Transcripts (agent harness)
 

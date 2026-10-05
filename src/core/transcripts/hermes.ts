@@ -2,11 +2,11 @@
  * hermes.ts — Hermes state.db (SQLite) adapter (cathedral-4).
  *
  * ONE store file holds MANY sessions (hermes-agent DEFAULT_DB_PATH =
- * <hermes home>/state.db). Reads are COPY-THEN-READ by default: readonly
- * opens of a WAL-mode SQLite database require write access to the -shm
- * sidecar and can intermittently lock against a live writer, so the adapter
- * copies the DB (+ -wal/-shm sidecars when present) to a temp dir and reads
- * the copy — deterministic, zero lock races, cleaned up in finally.
+ * <hermes home>/state.db). A native read-only connection holds one SQLite
+ * read transaction across session and message queries. WAL writers may
+ * continue committing while SQLite retains the reader's consistent snapshot.
+ * Completion, cancellation and errors close the connection and its transaction;
+ * no database/sidecar filesystem copies or external snapshot store are used.
  *
  * Schema verified against the INSTALLED hermes-agent v0.20.0 source
  * (hermes_state_common.py SCHEMA_SQL) — sessions(id, source, display_name,
@@ -17,9 +17,7 @@
  * the runtime backstop.
  */
 
-import { copyFileSync, existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { existsSync, statSync } from 'node:fs';
 import { Database } from 'bun:sqlite';
 import type { HostSpecTarget } from '../bootstrap/host-specs.ts';
 import type {
@@ -49,7 +47,7 @@ export const HERMES_SPEC_TARGET: HostSpecTarget = {
     'context window). PROVISIONAL: no populated production sample verified.',
 };
 
-/** Hard cap for the store copy (FTS indexes make legitimate stores large). */
+/** Legacy whole-store diagnostic budget; indexed native imports have no default cap. */
 export const HERMES_DB_HARD_CAP = 512 * 1024 * 1024;
 
 const SQLITE_MAGIC = 'SQLite format 3\u0000';
@@ -111,95 +109,88 @@ export const hermesAdapter: TranscriptAdapter = {
   },
 
   async *parse(path: string, opts: ParseSessionsOpts = {}): AsyncGenerator<ParsedSession, FileDiagnostics> {
-    const cap = opts.maxBytes ?? HERMES_DB_HARD_CAP;
+    const cap = opts.maxBytes;
     const size = statSync(path).size;
-    // The cap bounds the TOTAL copied (db + sidecars) — a runaway WAL can
-    // dwarf the main file, and only capping the db would let the copy blow
-    // through temp storage while advertising a 512MB bound.
+    // An explicitly requested store budget includes uncheckpointed WAL data.
+    // Default native SQLite reads do not load/copy the whole store, so its FTS
+    // indexes and unrelated conversations must not block an indexed selection.
     let totalBytes = size;
     for (const suffix of ['-wal', '-shm']) {
       if (existsSync(path + suffix)) totalBytes += statSync(path + suffix).size;
     }
-    if (totalBytes > cap) {
+    if (cap !== undefined && totalBytes > cap) {
       throw new Error(
         `hermes store too large for import: ${totalBytes} bytes incl. sidecars (cap ${cap})`,
       );
     }
 
-    // Copy-then-read: DB plus WAL/SHM sidecars so un-checkpointed writes are
-    // visible in the copy. A live writer can checkpoint BETWEEN the copies —
-    // the resulting torn snapshot surfaces as a schema/corruption error from
-    // the sessions query below, lands in the drift lane, and (because drift
-    // freezes the watermark) is safely retried by the next run.
-    const tmp = mkdtempSync(join(tmpdir(), 'gbrain-hermes-'));
-    const copyPath = join(tmp, basename(path));
     let sessions = 0;
+    let selectedRows = 0;
+    const db = new Database(path, { readonly: true });
     try {
-      copyFileSync(path, copyPath);
-      for (const suffix of ['-wal', '-shm']) {
-        if (existsSync(path + suffix)) copyFileSync(path + suffix, copyPath + suffix);
+      // BEGIN is deferred: the sessions SELECT below establishes the snapshot,
+      // retained across async yields until this reader closes. Never copy WAL files.
+      db.exec('BEGIN');
+      let sessionRows: SessionRow[];
+      try {
+        sessionRows = db
+          .query<SessionRow, string[]>(
+            'SELECT id, title, display_name, started_at, cwd, model, source ' +
+              'FROM sessions' +
+              (opts.sessionSources === undefined ? '' : opts.sessionSources.length
+                ? ` WHERE source IN (${opts.sessionSources.map(() => '?').join(',')})`
+                : ' WHERE 0') +
+              ' ORDER BY started_at',
+          )
+          .all(...(opts.sessionSources ?? []));
+        selectedRows = sessionRows.length;
+      } catch (err) {
+        // Missing/renamed tables = host schema drift, not a crash.
+        return {
+          bytesRead: size,
+          skippedLines: 0,
+          truncated: false,
+          sessions: 0,
+          zeroSessionsReason: `schema mismatch reading sessions table: ${String(err)}`,
+        };
       }
 
-      const db = new Database(copyPath, { readonly: true });
-      try {
-        let sessionRows: SessionRow[];
-        try {
-          sessionRows = db
-            .query<SessionRow, []>(
-              'SELECT id, title, display_name, started_at, cwd, model, source ' +
-                'FROM sessions ORDER BY started_at',
-            )
-            .all();
-        } catch (err) {
-          // Missing/renamed tables = host schema drift, not a crash.
-          return {
-            bytesRead: size,
-            skippedLines: 0,
-            truncated: false,
-            sessions: 0,
-            zeroSessionsReason: `schema mismatch reading sessions table: ${String(err)}`,
-          };
+      const msgQuery = db.query<MessageRow, [string]>(
+        "SELECT role, content, timestamp FROM messages WHERE session_id = ? " +
+          "AND role IN ('user','assistant') ORDER BY timestamp, id",
+      );
+      for (const row of sessionRows) {
+        if (typeof row.id !== 'string' || !row.id) continue;
+        const messages: TranscriptMessage[] = [];
+        for (const m of msgQuery.all(row.id)) {
+          const role = m.role === 'user' || m.role === 'assistant' ? m.role : null;
+          if (!role) continue;
+          const text = contentToText(m.content);
+          if (!text) continue;
+          messages.push({ role, timestamp: epochToIso(m.timestamp), text });
         }
-
-        const msgQuery = db.query<MessageRow, [string]>(
-          "SELECT role, content, timestamp FROM messages WHERE session_id = ? " +
-            "AND role IN ('user','assistant') ORDER BY timestamp, id",
-        );
-        for (const row of sessionRows) {
-          if (typeof row.id !== 'string' || !row.id) continue;
-          const messages: TranscriptMessage[] = [];
-          for (const m of msgQuery.all(row.id)) {
-            const role = m.role === 'user' || m.role === 'assistant' ? m.role : null;
-            if (!role) continue;
-            const text = contentToText(m.content);
-            if (!text) continue;
-            messages.push({ role, timestamp: epochToIso(m.timestamp), text });
-          }
-          if (!messages.length) continue;
-          sessions++;
-          yield {
-            meta: {
-              harness: 'hermes',
-              sessionId: row.id,
-              title: row.title ?? row.display_name ?? undefined,
-              cwd: row.cwd ?? undefined,
-              model: row.model ?? undefined,
-              startedAt: epochToIso(row.started_at) || messages[0].timestamp || undefined,
-              raw: {
-                session_id: row.id,
-                source: row.source ?? null,
-                cwd: row.cwd ?? null,
-                source_path: path,
-              },
+        if (!messages.length) continue;
+        sessions++;
+        yield {
+          meta: {
+            harness: 'hermes',
+            sessionId: row.id,
+            title: row.title ?? row.display_name ?? undefined,
+            cwd: row.cwd ?? undefined,
+            model: row.model ?? undefined,
+            startedAt: epochToIso(row.started_at) || messages[0].timestamp || undefined,
+            raw: {
+              session_id: row.id,
+              source: row.source ?? null,
+              cwd: row.cwd ?? null,
+              source_path: path,
             },
-            messages,
-          };
-        }
-      } finally {
-        db.close();
+          },
+          messages,
+        };
       }
     } finally {
-      rmSync(tmp, { recursive: true, force: true });
+      db.close();
     }
 
     return {
@@ -207,8 +198,13 @@ export const hermesAdapter: TranscriptAdapter = {
       skippedLines: 0,
       truncated: false,
       sessions,
+      expectedEmpty: opts.sessionSources !== undefined && selectedRows === 0 ? true : undefined,
       zeroSessionsReason:
-        sessions === 0 ? 'no sessions with user/assistant text messages in store' : undefined,
+        sessions === 0
+          ? opts.sessionSources !== undefined && selectedRows === 0
+            ? 'no sessions match the selected native session sources'
+            : 'no sessions with user/assistant text messages in store'
+          : undefined,
     };
   },
 };
