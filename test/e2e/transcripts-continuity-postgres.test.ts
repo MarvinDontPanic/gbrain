@@ -471,3 +471,64 @@ for (const { retryChild, compactedParent } of [
     resetGateway(); rmSync(root, { recursive: true, force: true });
   }
 }, 60_000);
+
+pgTest('automatic transcript refresh preserves owner quarantine until explicit native clear', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'transcripts-owner-quarantine-pg-'));
+  configureGateway({ ...LEGACY_EMBEDDING_CONFIG, env: {} });
+  const pg = await isolatedPersistencePostgres(process.env.DATABASE_URL!);
+  try {
+    await withEnv({ GBRAIN_HOME: join(root, 'home') }, async () => {
+      const canonical = join(root, 'canonical'); mkdirSync(canonical);
+      await pg.engine.executeRaw('UPDATE sources SET local_path=$1 WHERE id=$2', [canonical, 'default']);
+      await registerLocalWriter(pg.engine, 'cli');
+      await claimWorktree(pg.engine, 'default', canonical);
+      await pg.engine.executeRaw('UPDATE persistence_brain SET enabled=true WHERE singleton=1');
+      const path = join(root, 'rollout.jsonl');
+      start(path, 'operator-withheld-source', 'Original source remains preserved.');
+      const run = () => runTranscriptsIngest(pg.engine, { paths: [path], sourceId: 'default', userPatternsPath: join(root, 'patterns') });
+      const slug = (await run()).slugsTouched[0];
+      const marker = { reason: 'literal_substring', detail: 'Owner reviewed this source and withheld it from ordinary retrieval.', assessed_at: '2026-01-01T12:00:00Z' };
+      const ownerWrite = async (frontmatter: Record<string, unknown>, body: string, revision: string) => submitPageMutation({
+        engine: pg.engine, remote: false, dryRun: false, sourceId: 'default', config: { engine: 'postgres' }, deferEmbeds: true, logger: console,
+      }, { operation: 'put_page', waitMs: 30_000, params: {
+        slug, source_id: 'default', expected_revision: revision, content: renderPartContent(frontmatter, body),
+      } });
+      const original = (await pg.engine.readPageSnapshot(slug, { sourceId: 'default' }))!;
+      await ownerWrite({ ...original.page.frontmatter, quarantine: marker, atoms_scan_hash: 'stale-completion' }, original.page.compiled_truth, original.revision);
+      expect((await pg.engine.getPage(slug, { sourceId: 'default' }))!.frontmatter.quarantine).toEqual(marker);
+      expect(await pg.engine.getChunks(slug, { sourceId: 'default' })).toHaveLength(0);
+
+      const unchanged = await run();
+      expect(unchanged.cleanScan).toBe(true);
+      const afterUnchanged = (await pg.engine.getPage(slug, { sourceId: 'default' }))!;
+      expect(afterUnchanged.frontmatter.quarantine).toEqual(marker);
+      expect(afterUnchanged.frontmatter.atoms_scan_hash).toBeUndefined();
+      expect(await pg.engine.getChunks(slug, { sourceId: 'default' })).toHaveLength(0);
+      expect(readFileSync(join(canonical, `${slug}.md`), 'utf8')).toContain(marker.detail);
+
+      appendFileSync(path, record('2026-02-01T12:00:00Z', 'A resumed source update is retained while withheld.'));
+      const resumed = await run();
+      expect(resumed.cleanScan).toBe(true);
+      expect(resumed.pages.imported).toBe(1);
+      const afterResumed = (await pg.engine.readPageSnapshot(slug, { sourceId: 'default' }))!;
+      expect(afterResumed.page.frontmatter.quarantine).toEqual(marker);
+      expect(afterResumed.page.frontmatter.visibility).toBe('private');
+      expect(afterResumed.page.compiled_truth).toContain('A resumed source update is retained while withheld.');
+      expect(await pg.engine.getChunks(slug, { sourceId: 'default' })).toHaveLength(0);
+      expect(readFileSync(join(canonical, `${slug}.md`), 'utf8')).toContain(marker.detail);
+
+      // Explicit trusted-owner mutation is the native clear boundary. The
+      // automatic collector never clears an existing owner's hold implicitly.
+      const cleared = { ...afterResumed.page.frontmatter }; delete cleared.quarantine;
+      await ownerWrite(cleared, afterResumed.page.compiled_truth, afterResumed.revision);
+      expect((await pg.engine.getPage(slug, { sourceId: 'default' }))!.frontmatter.quarantine).toBeUndefined();
+      expect((await pg.engine.getChunks(slug, { sourceId: 'default' })).length).toBeGreaterThan(0);
+      // The explicit owner serialization may add a body-ending newline;
+      // the first collector pass restores its source rendering, then skips.
+      expect((await run()).cleanScan).toBe(true);
+      expect((await run()).pages.skipped).toBe(1);
+      expect((await pg.engine.getPage(slug, { sourceId: 'default' }))!.frontmatter.quarantine).toBeUndefined();
+      expect((await pg.engine.getChunks(slug, { sourceId: 'default' })).length).toBeGreaterThan(0);
+    });
+  } finally { await pg.close(); resetGateway(); rmSync(root, { recursive: true, force: true }); }
+}, 60_000);

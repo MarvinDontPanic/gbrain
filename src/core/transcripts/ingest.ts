@@ -36,6 +36,7 @@ import { resolveSourceLocalFilePath } from '../markdown.ts';
 import { recordedPathFromFileUri, scannerSlugRootMode } from '../write-through.ts';
 import { managedImportContent, readImportBytes } from '../persistence/import-prepare.ts';
 import type { PageSnapshot } from '../page-state/types.ts';
+import { QUARANTINE_KEY } from '../quarantine.ts';
 import type { BrainEngine } from '../engine.ts';
 import type { Page } from '../types.ts';
 import { importFromContent } from '../import-file.ts';
@@ -530,7 +531,9 @@ async function preserveForeignFrontmatter(engine: BrainEngine, sourceId: string,
   part.content = renderPartContent({ ...part.frontmatter, ...Object.fromEntries(foreign) }, part.body);
 }
 
-const RE_DERIVED_KEYS = new Set([...RECONCILE_SAFETY_KEYS, ATOMS_SCAN_HASH_KEY]);
+// Automatic refresh cannot release a trusted owner's quarantine. Preserve
+// that hold from the guarded snapshot; clearing requires an explicit owner write.
+const RE_DERIVED_KEYS = new Set([...RECONCILE_SAFETY_KEYS.filter(key => key !== QUARANTINE_KEY), ATOMS_SCAN_HASH_KEY]);
 
 async function adoptExistingBaseSlug(engine: BrainEngine, sourceId: string, rendered: RenderSessionResult): Promise<void> {
   const [existing] = await engine.executeRaw<{ slug: string }>(
