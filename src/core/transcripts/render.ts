@@ -278,7 +278,9 @@ export interface RenderedPart {
 }
 
 export function renderPartContent(frontmatter: Record<string, unknown>, body: string): string {
-  return `---\n${safeDump(frontmatter, { lineWidth: 1000 })}---\n\n${body}\n`;
+  const note = 'Message timestamps below are UTC, shown at minute precision; exact timestamps remain in the original native transcript.';
+  const header = frontmatter.timezone === 'UTC' && !body.startsWith(note) ? `${note}\n\n` : '';
+  return `---\n${safeDump(frontmatter, { lineWidth: 1000 })}---\n\n${header}${body}\n`;
 }
 
 export interface RenderSessionResult {
@@ -385,6 +387,7 @@ export function renderSessionParts(
       visibility: 'private',
       title: of > 1 ? `${title} (part ${part} of ${of})` : title,
       date: dateIso.slice(0, 10),
+      timezone: 'UTC',
       id: frontmatterId,
       transcript_import: {
         harness: meta.harness,

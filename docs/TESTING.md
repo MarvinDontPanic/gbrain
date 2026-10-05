@@ -365,6 +365,13 @@ the runner's exit trap also cleans up interrupted runs.
 
 Test command tiers, each with a clear scope:
 
+Before filesystem/persistence tests on macOS, verify the inherited `TMPDIR`
+points to a canonical path. Symlink ancestors are deliberately rejected by
+content-root guards; a fixture under `/var/...` is not a valid canonical root.
+Use a canonical task scratch directory, or resolve the existing temporary root
+before Bun starts: `TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)" bun run test`.
+Do not weaken the production path guard to accommodate the fixture environment.
+
 | Command | What it runs | Wallclock | When to use |
 |---|---|---|---|
 | `bun run test` | Parallel unit loop (`scripts/run-unit-parallel.sh`): weighted shards (CPU-detected, 4 by default, at most 8; CI uses 8), then the serial pass. Excludes `*.slow.test.ts` and `test/e2e/*`; no typecheck. Builds the PGLite schema snapshot first and exports `GBRAIN_PGLITE_SNAPSHOT` (opt out: `GBRAIN_NO_SNAPSHOT=1`). Caps total concurrency to available memory at `GBRAIN_TEST_MEM_PER_FILE_MB` (default 1536) per slot, shedding intra-shard width before shards. Shards that fail with the WASM out-of-memory signature or are killed externally get one serial rescue pass: phantoms go green with an `oom_rescued` note, real failures stay red. Knobs: `GBRAIN_TEST_NO_MEM_ADAPT=1`, `GBRAIN_TEST_NO_OOM_FALLBACK=1`, `GBRAIN_TEST_MAX_CONCURRENCY` (default 4), `GBRAIN_TEST_SHARD_TIMEOUT` / `GBRAIN_TEST_SHARD_KILL_AFTER`, `--shards N` / `--max-concurrency N` / `--dry-run`. | a few minutes on a laptop | Inner edit loop. Default. |

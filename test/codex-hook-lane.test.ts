@@ -33,6 +33,10 @@ const meta = JSON.stringify({
 const user = (text: string) => JSON.stringify({ timestamp: 't1', type: 'event_msg', payload: { type: 'user_message', message: text } });
 const assistant = (text: string) =>
   JSON.stringify({ timestamp: 't2', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] } });
+const completedAssistant = (id: string, text: string) => JSON.stringify({ timestamp: 't2', type: 'event_msg',
+  payload: { type: 'item_completed', item: { type: 'AgentMessage', id, content: [{ type: 'Text', text }] } } });
+const identifiedAssistant = (id: string, text: string) => JSON.stringify({ timestamp: 't2', type: 'response_item',
+  payload: { type: 'message', role: 'assistant', id, content: [{ type: 'output_text', text }] } });
 const injected = JSON.stringify({ timestamp: 't1', type: 'response_item', payload: { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'INJECTED-NEVER' }] } });
 const customCall = JSON.stringify({ timestamp: 't3', type: 'response_item', payload: { type: 'custom_tool_call', id: 'ri-4', name: 'search_brain', input: '{"query":"widget-co seed"}' } });
 const fnCall = JSON.stringify({ timestamp: 't4', type: 'response_item', payload: { type: 'function_call', id: 'ri-6', call_id: 'c-1', name: 'shell', arguments: '{"command":["bash","-lc","bun test"]}' } });
@@ -40,6 +44,37 @@ const callOutput = JSON.stringify({ timestamp: 't5', type: 'response_item', payl
 const boundary = JSON.stringify({ timestamp: 't6', type: 'compacted', payload: { message: 'compacted' } });
 
 describe('parseCodexHookTranscript', () => {
+  test('native assistant pairs in either order keep async messages and distinct IDs with honest turn-space positions', () => {
+    const path = join(dir, 'rollout-native-pairs.jsonl');
+    writeFileSync(path, [meta, user('Initial request.'),
+      completedAssistant('pair-one', 'Same answer.'), identifiedAssistant('pair-one', 'Same answer.'),
+      customCall, boundary,
+      identifiedAssistant('pair-two', 'Same answer.'), completedAssistant('pair-two', 'Same answer.'),
+      completedAssistant('async-only', 'Asynchronous question.'), user('Follow-up request.'),
+      assistant('No native ID.'), assistant('No native ID.'),
+    ].join('\n'));
+    const parsed = parseCodexHookTranscript(path, { collectToolCalls: true });
+    expect(parsed.turns).toEqual([
+      { role: 'user', text: 'Initial request.' },
+      { role: 'assistant', text: 'Same answer.' },
+      { role: 'assistant', text: 'Same answer.' },
+      { role: 'assistant', text: 'Asynchronous question.' },
+      { role: 'user', text: 'Follow-up request.' },
+      { role: 'assistant', text: 'No native ID.' },
+      { role: 'assistant', text: 'No native ID.' },
+    ]);
+    expect(parsed.genuineUserTurnIndexes).toEqual([0, 4]);
+    expect(parsed.toolCallTurnIndexes).toEqual([2]);
+    expect(parsed.boundaryTurnIndexes).toEqual([2]);
+  });
+
+  test('contradictory native assistant copies fail instead of selecting one text', () => {
+    const path = join(dir, 'rollout-native-conflict.jsonl');
+    writeFileSync(path, [meta, identifiedAssistant('contradictory', 'Original answer.'),
+      completedAssistant('contradictory', 'Contradictory answer.')].join('\n'));
+    expect(() => parseCodexHookTranscript(path)).toThrow('conflicting native assistant message identity');
+  });
+
   test('fixture parses: turns exclude injected context and tool output; calls carry observed args keys, span-stamped', () => {
     const p = join(dir, 'rollout-1.jsonl');
     writeFileSync(p, [meta, injected, user('fix the failing order tests'), customCall, callOutput, assistant('done — pushed the fix'), '{torn'].join('\n') + '\n');

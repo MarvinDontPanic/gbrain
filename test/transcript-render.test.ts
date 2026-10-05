@@ -275,7 +275,7 @@ describe('part splitting [embed-skip is the binding limit]', () => {
     const p2Body = splitBody(r.parts[1].content);
     const p1LastAnchor = p1Body.trimEnd().split('\n\n').at(-OVERLAP_MESSAGES)?.split('\n')[0];
     expect(p1LastAnchor).toBeTruthy();
-    expect(p2Body.startsWith(p1LastAnchor as string)).toBe(true);
+    expect(p2Body.split('\n').find(line => line.startsWith('**'))).toBe(p1LastAnchor);
   });
 
   // #5427: PART_TARGET_BYTES must stay under the content-sanity WARN line.

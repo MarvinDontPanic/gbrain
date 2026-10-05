@@ -1,13 +1,24 @@
-import { afterEach, expect, test } from 'bun:test';
+import { afterEach, expect, spyOn, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseIngestArgs, ingestCheckpointFingerprintInput } from '../src/commands/transcripts.ts';
+import { parseIngestArgs, ingestCheckpointFingerprintInput, runTranscripts } from '../src/commands/transcripts.ts';
 import { fingerprint } from '../src/core/op-checkpoint.ts';
 import { buildHermesFixture } from './fixtures/transcripts/hermes-fixture-builder.ts';
 import type { TranscriptsIngestResult } from '../src/core/transcripts/ingest.ts';
 
 const dirs: string[] = [];
+test('all nested transcript help is engine-free, including status', async () => {
+  const output: string[] = [];
+  const logging = spyOn(console, 'log').mockImplementation(value => { output.push(String(value)); });
+  try {
+    for (const sub of ['status', 'ingest', 'recent']) {
+      for (const flag of ['--help', '-h']) await runTranscripts(null as never, [sub, flag]);
+    }
+  } finally { logging.mockRestore(); }
+  expect(output).toHaveLength(6);
+  expect(output.every(value => value.startsWith('Usage:'))).toBe(true);
+});
 function scratch(): string {
   const dir = mkdtempSync(join(tmpdir(), 'transcripts-cli-'));
   dirs.push(dir);
@@ -140,4 +151,9 @@ test('a requested directory with zero importable files fails instead of silently
   const { stderr, exit } = await runRaw([dir, '--dry-run'], dir);
   expect(stderr).toContain('0 files matched');
   expect(exit).toBe(1);
+});
+
+test('managed failed-write retry is an explicit native CLI option', () => {
+  expect(parseIngestArgs(['ingest-fixture.jsonl', '--retry-failed'])).toMatchObject({ retryFailed: true });
+  expect(parseIngestArgs(['ingest-fixture.jsonl'])).not.toHaveProperty('retryFailed');
 });

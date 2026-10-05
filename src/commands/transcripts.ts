@@ -81,6 +81,7 @@ interface IngestCliOpts {
   /** gbrain#4149: explicit per-format byte-cap override; undefined = adapter-native defaults. */
   maxBytes?: number;
   embed?: boolean;
+  retryFailed?: boolean;
   all?: boolean;
   json?: boolean;
   quiet?: boolean;
@@ -127,6 +128,7 @@ export function parseIngestArgs(args: string[]): IngestCliOpts | { help: true } 
     if (a === '--quiet') { opts.quiet = true; continue; }
     if (a === '--dry-run') { opts.dryRun = true; continue; }
     if (a === '--embed') { opts.embed = true; continue; }
+    if (a === '--retry-failed') { opts.retryFailed = true; continue; }
     if (a === '--facts') { opts.facts = true; continue; }
     if (a === '--all') { opts.all = true; continue; }
     if (a === '--include-self') { opts.includeSelf = true; continue; }
@@ -232,6 +234,7 @@ Embedding is OFF by default; run the embed backfill later or opt in.
                     Omit to include all origins, including cron/generated sessions
   --embed           Fill missing vectors on touched pages, including hash skips
                     (default: defer to embed backfill)
+  --retry-failed    Explicitly retry frozen failed managed writes after repair
   --facts           Extract facts from imported pages (budget-capped)
   --max-cost-usd F  Facts budget cap (default 5)
   --max-bytes N     Explicit per-format file/store byte budget (e.g. 4gb).
@@ -519,6 +522,7 @@ async function runIngest(engine: BrainEngine, args: string[]): Promise<void> {
       sessionSources: parsed.sessionSources,
       // Close embedding over all touched pages below, including hash skips.
       embed: false,
+      retryFailed: parsed.retryFailed,
       activePack,
       onFileDone: () => reporter.tick(),
       // Multi-session stores (one hermes state.db = thousands of sessions)
@@ -648,6 +652,11 @@ async function runStatus(engine: BrainEngine, args: string[]): Promise<void> {
 }
 
 export async function runTranscripts(engine: BrainEngine, args: string[]): Promise<void> {
+  // CLI help dispatch deliberately supplies no engine, including nested help.
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(HELP);
+    return;
+  }
   const sub = args[0];
   if (sub === 'ingest') {
     await runIngest(engine, args.slice(1));

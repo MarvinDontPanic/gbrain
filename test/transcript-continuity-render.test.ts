@@ -53,4 +53,23 @@ describe('complete private conversation rendering', () => {
     const end = part.content.indexOf('\n---\n', 4);
     expect((safeLoad(part.content.slice(4, end)) as Record<string, unknown>).visibility).toBe('private');
   });
+
+  test('UTC clock labels are explicit in every part, not ambiguous local times', () => {
+    const result = render('B'.repeat(PART_TARGET_BYTES * 2));
+    for (const part of result.parts) {
+      const end = part.content.indexOf('\n---\n', 4);
+      expect((safeLoad(part.content.slice(4, end)) as Record<string, unknown>).timezone).toBe('UTC');
+      expect(body(part.content)).toContain('timestamps below are UTC, shown at minute precision');
+      expect(parseConversation(body(part.content)).messages[0].timestamp).toBe('2026-01-01T10:00:00Z');
+    }
+  });
+});
+
+test('offset-bearing source times retain the correct UTC day at midnight', () => {
+  const original: ParsedSession = {
+    meta: { harness: 'codex', sessionId: 'offset-midnight-example', startedAt: '2026-01-01T23:50:00-05:00' },
+    messages: [{ role: 'user', timestamp: '2026-01-01T23:50:00-05:00', text: 'A dated recovery decision.' }],
+  };
+  const part = renderSessionParts(redactSession(original, { userPatternsPath: '/nonexistent' })).parts[0];
+  expect(parseConversation(body(part.content)).messages[0].timestamp).toBe('2026-01-02T04:50:00Z');
 });

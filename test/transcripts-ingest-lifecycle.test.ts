@@ -113,7 +113,10 @@ test('canonical identity lookup failure aborts instead of treating identity as a
   write(path, '2026-01-02T10:00:00Z', 'decision requiring identity verification');
   const executeRaw = engine.executeRaw;
   try {
-    engine.executeRaw = async () => { throw new Error('injected identity lookup failure'); };
+    engine.executeRaw = async <T = Record<string, unknown>>(query: string, params?: unknown[]) => {
+      if (query.includes("frontmatter->'transcript_import'")) throw new Error('injected identity lookup failure');
+      return executeRaw.call(engine, query, params) as Promise<T[]>;
+    };
     await expect(runTranscriptsIngest(engine, opts(path))).rejects.toThrow('transcripts-ingest run abort');
   } finally { engine.executeRaw = executeRaw; }
 });

@@ -55,11 +55,13 @@ async function fixture(engine: BrainEngine) {
 test('fresh public init imports a directory and a file, reads them, and refuses skill publication', async () => {
   for (const git of [false, true]) {
     const local = join(home, git ? 'cli-git' : 'cli'); mkdirSync(local);
-    const cwd = join(local, 'cwd'); mkdirSync(cwd);
+    // Own every ancestor in repo-root.ts's ten-level skills discovery walk.
+    const cwd = join(local, ...Array.from({ length: 10 }, (_, i) => `cwd-${i}`)); mkdirSync(cwd, { recursive: true });
     const input = join(local, 'input'); mkdirSync(input);
     const cli = async (...args: string[]) => {
-      const child = Bun.spawn([process.execPath, join(import.meta.dir, '../src/cli.ts'), ...args], {
-        cwd, env: { PATH: process.env.PATH, HOME: local, GBRAIN_HOME: local, GBRAIN_DISABLE_UPDATE_CHECK: '1', GBRAIN_EMBEDDING_MULTIMODAL: 'true' }, stdout: 'pipe', stderr: 'pipe', stdin: 'ignore',
+      const child = Bun.spawn([process.execPath, '--no-env-file', join(import.meta.dir, '../src/cli.ts'), ...args], {
+        cwd, env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, HOME: local, GBRAIN_HOME: local,
+          NODE_ENV: 'test', GBRAIN_SKIP_STARTUP_HOOKS: '1', GBRAIN_EMBEDDING_MULTIMODAL: 'true' }, stdout: 'pipe', stderr: 'pipe', stdin: 'ignore',
       });
       const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
       return { stdout, stderr, code };
@@ -88,7 +90,7 @@ test('fresh public init imports a directory and a file, reads them, and refuses 
     expect(imageRead.code, imageRead.stderr).toBe(0);
     expect(JSON.parse(imageRead.stdout).type).toBe('image');
     const doctor = await cli('doctor', '--json');
-    expect(doctor.code, doctor.stderr).toBe(0);
+    expect(doctor.code, `${doctor.stderr}\n${doctor.stdout}`).toBe(0);
     const checks = JSON.parse(doctor.stdout).checks;
     expect(checks.find((check: { name: string }) => check.name === 'sync_freshness')).toMatchObject({ status: 'ok', details: { writer_owned_count: 1 } });
     expect(checks.find((check: { name: string }) => check.name === 'canonical_content_writes')).toMatchObject({ status: 'ok', details: { pending_count: 0, recovering_count: 0 } });

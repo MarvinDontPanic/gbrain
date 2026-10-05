@@ -102,6 +102,14 @@ is excluded or represented by adapter-native placeholders; the original
 `source_uri` is evidence for raw tool records, not a claim they were indexed. Providers without a native adapter (e.g. Perplexity) keep
 using the manual conversion below.
 
+Rendered clock labels are UTC at minute precision, explicitly stated in each
+page and its timezone metadata. Verify exact timestamps against the linked
+original, especially around midnight or when the source carries an offset.
+Managed brains use native committed write receipts for imports and repeated
+no-op scans. A failed receipt stays frozen: inspect its reported request, repair
+the initiating cause, then explicitly rerun with `--retry-failed`. Normal
+scheduled scans do not silently replace failed writes.
+
 ## Where Conversations Live
 
 ```

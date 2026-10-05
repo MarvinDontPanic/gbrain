@@ -25,6 +25,7 @@ import { isOpenclawCheckpointFile } from './openclaw.ts';
 import { isGrokChatHistoryFile } from './grok.ts';
 import { isClaudeCodeSubagentFile, isClaudeCodeWorkflowArtifactFile } from './claude-code.ts';
 import { isClaudeCliSelfTranscriptPath } from '../ai/providers/claude-cli-scratch.ts';
+import { isCodexSubagentFile } from './codex.ts';
 
 export interface DiscoveredFile {
   format: TranscriptFormat;
@@ -98,6 +99,9 @@ export function discoverTranscriptFiles(roots?: HarnessRoot[], opts: DiscoverOpt
       // session id, so they can never import. Left in, each one is a
       // permanent gap-table phantom + a false DRIFT WARNING every ingest.
       if (format === 'claude-code' && isClaudeCodeSubagentFile(p)) continue;
+      // Codex children live beside their parents, not in a subagents directory.
+      // The native first session_meta source tag distinguishes delegated logs.
+      if (format === 'codex' && isCodexSubagentFile(p)) continue;
       // Workflow run bookkeeping (agent logs + a journal.jsonl that matches no
       // adapter format). Discoverable, it errored every ingest and froze the
       // shared --since watermark via cleanScan.
