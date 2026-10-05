@@ -288,20 +288,25 @@ export function isValueOnlyImport(block: string, importIndex: number): boolean {
 export function stripComments(src: string): string {
   let out = '';
   let i = 0;
+  let copyFrom = 0;
   const n = src.length;
   while (i < n) {
     const c = src[i];
     const next = src[i + 1];
     if (c === '/' && next === '/') {
+      out += src.slice(copyFrom, i);
       while (i < n && src[i] !== '\n') i++;
+      copyFrom = i;
       continue;
     }
     if (c === '/' && next === '*') {
+      out += src.slice(copyFrom, i);
       const end = src.indexOf('*/', i + 2);
       const stop = end < 0 ? n : end + 2;
       // Keep the newlines the comment spanned so line structure survives.
       out += src.slice(i, stop).replace(/[^\n]/g, '');
       i = stop;
+      copyFrom = i;
       continue;
     }
     if (c === "'" || c === '"' || c === '`') {
@@ -312,14 +317,12 @@ export function stripComments(src: string): string {
         else if (quote !== '`' && src[j] === '\n') break; // unterminated: stop at EOL
         j++;
       }
-      out += src.slice(i, Math.min(n, j + 1));
       i = j + 1;
       continue;
     }
-    out += c;
     i++;
   }
-  return out;
+  return out + src.slice(copyFrom);
 }
 
 export function segmentDispatchBlocks(fnSrc: string): Map<string, string> {
@@ -363,6 +366,18 @@ export function buildRoutingFlags(root: string = ROOT): Record<string, string[]>
 }
 
 function buildFlagArtifacts(root: string): { registry: Record<string, string[]>; routing: Record<string, string[]> } {
+  // Modules are shared across command surfaces. Read and strip each once per
+  // generation, never across generations (fixture/source edits must be seen).
+  const sources = new Map<string, { text: string; code: string }>();
+  const source = (path: string) => {
+    let cached = sources.get(path);
+    if (!cached) {
+      const text = readSrc(path);
+      cached = { text, code: stripComments(text) };
+      sources.set(path, cached);
+    }
+    return cached;
+  };
   // CLI_ONLY membership: one record per command in the command table
   // (src/cli/command-table.ts), read by AST so the generator never executes
   // the table.
@@ -388,7 +403,7 @@ function buildFlagArtifacts(root: string): { registry: Record<string, string[]>;
   for (const record of records) {
     const mod = record.loadSpecifier ? readCommandModule(root, record.loadSpecifier) : null;
     // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- mod.path comes from the repo's own command table literal import specifiers; build-time only
-    if (mod) addBlock(record.name, stripComments(readSrc(join(root, mod.path))), dirname(join(root, mod.path)));
+    if (mod) addBlock(record.name, source(join(root, mod.path)).code, dirname(join(root, mod.path)));
   }
 
   // Safety flags carry destructive-bypass semantics: allowlisting one that
@@ -445,18 +460,17 @@ function buildFlagArtifacts(root: string): { registry: Record<string, string[]>;
       // imports scan at dep depth — exactly the pre-peel walk.
       const surface = [modPath, ...facadeExpansion(modPath)];
       for (const sfPath of surface) {
-        const sfSrc = readSrc(sfPath);
+        const { text: sfSrc, code: sfCode } = source(sfPath);
         // Comments are prose at every depth, not just in the dispatch block:
         // a helper's doc comment ("Used by --fresh + after manual reset" in
         // backfill-base.ts) handed reindex-search-vector a --fresh it never
         // parses the moment the command imported one function from it.
         // Consumed flags are always string literals, so stripping can only
         // remove phantoms.
-        const sfCode = stripComments(sfSrc);
         depthZeroText += sfCode;
         for (const f of flagsInText(sfCode)) { flags.add(f); depthZero.add(f); }
         for (const dep of relativeImports(sfSrc, dirname(sfPath))) {
-          for (const f of flagsInText(stripComments(readSrc(dep)))) flags.add(f);
+          for (const f of flagsInText(source(dep).code)) flags.add(f);
         }
       }
     }
@@ -465,7 +479,7 @@ function buildFlagArtifacts(root: string): { registry: Record<string, string[]>;
       // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- build-time generator over this repository's own source tree; every joined segment is a constant module path from DELEGATED_MODULES
       const path = join(root, rel);
       if (!existsSync(path)) continue;
-      const code = stripComments(readSrc(path));
+      const code = source(path).code;
       depthZeroText += code;
       for (const f of flagsInText(code)) { flags.add(f); depthZero.add(f); }
     }

@@ -77,6 +77,19 @@ afterAll(() => {
 });
 
 describe('synthetic command registered through the table', () => {
+  test('a later generation observes changed command source', () => {
+    const rel = 'src/commands/synthetic-example.ts';
+    const path = join(root, rel);
+    expect(buildFlagRegistry(root)['synthetic-example']).not.toContain('--later-flag');
+    try {
+      writeFileSync(path, FILES[rel] + "\nconst changed = args.includes('--later-flag');\n");
+      expect(buildFlagRegistry(root)['synthetic-example']).toContain('--later-flag');
+    } finally {
+      writeFileSync(path, FILES[rel]);
+    }
+    expect(buildFlagRegistry(root)['synthetic-example']).not.toContain('--later-flag');
+  });
+
   test('its consumed flag is legal and an unknown flag is rejected', () => {
     const legal = new Set(buildFlagRegistry(root)['synthetic-example']);
     expect(legal.has('--frobnicate')).toBe(true);
