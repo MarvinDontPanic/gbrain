@@ -6,6 +6,7 @@ import { overlapPercent, summarizeReadRuns } from '../scripts/persistence/read-m
 import { runReadPerformance } from '../scripts/persistence/performance.ts';
 import { runReadLatencyWorkload } from '../scripts/persistence/read-workload.ts';
 import { WriteTimingRecorder } from '../scripts/persistence/read-admission.ts';
+import { ReadDiagnostics } from '../scripts/persistence/read-diagnostics.ts';
 import { withEnv } from './helpers/with-env.ts';
 import { childEnvironment } from '../scripts/persistence/validate.ts';
 import { samplePeakRss } from '../scripts/persistence/harness.ts';
@@ -29,9 +30,26 @@ describe('read-load evidence', () => {
       if (++calls === 1 || all) throw new Error('Failed to get memory usage');
       return original.call(process);
     }, { rss: original.rss }));
+    // RSS behavior needs real reads and an overlapping committed write, not a
+    // second 200-query performance benchmark. Own that overlap deterministically.
+    const committed = Promise.withResolvers<void>();
+    let loaded = false;
+    const complete = WriteTimingRecorder.prototype.complete;
+    const completion = spyOn(WriteTimingRecorder.prototype, 'complete').mockImplementation(function(this: WriteTimingRecorder, ...args: Parameters<WriteTimingRecorder['complete']>) {
+      const result = complete.apply(this, args);
+      if (loaded) committed.resolve();
+      return result;
+    });
+    const read = ReadDiagnostics.prototype.read;
+    const reading = spyOn(ReadDiagnostics.prototype, 'read').mockImplementation(function<T>(this: ReadDiagnostics, index: number, corpusIndex: number, run: () => Promise<T>) {
+      return read.bind(this)(index, corpusIndex, async () => {
+        if (this.phase === 'loaded' && index === 0) { loaded = true; await committed.promise; }
+        return run();
+      });
+    });
     try {
       await withEnv({ GBRAIN_HOME: home }, async () => {
-        const result = await runReadLatencyWorkload({ pages: 4, queries: 200, writers: 1, writesPerWriter: 100 });
+        const result = await runReadLatencyWorkload({ pages: 4, queries: 4, writers: 1, writesPerWriter: 1 });
         expect(result.ok).toBe(true);
         expect(result.phase_b.writes_completed).toBeGreaterThan(0);
         expect(result.phase_b.writes_failed).toBe(0);
@@ -45,7 +63,7 @@ describe('read-load evidence', () => {
           expect(result.peak_rss_bytes).toBeGreaterThan(0);
         }
       });
-    } finally { memory.mockRestore(); rmSync(home, { recursive: true, force: true }); }
+    } finally { reading.mockRestore(); completion.mockRestore(); memory.mockRestore(); rmSync(home, { recursive: true, force: true }); }
   }, 60000);
 
   test('rejects invalid workload sizes before opening a datastore', async () => {

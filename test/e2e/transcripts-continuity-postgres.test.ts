@@ -38,7 +38,7 @@ function start(path: string, id: string, text: string, timestamp = '2026-01-01T1
   writeFileSync(path, JSON.stringify({ type: 'session_meta', payload: { id, timestamp } }) + '\n' + record(timestamp, text));
 }
 
-pgTest('managed native PostgreSQL import preserves long text, resumed and older history, privacy and idempotency', async () => {
+pgTest('managed native PostgreSQL import preserves long text, resumed and older history, agent access and idempotency', async () => {
   const root = mkdtempSync(join(tmpdir(), 'transcripts-continuity-pg-'));
   configureGateway({ ...LEGACY_EMBEDDING_CONFIG, env: {} });
   const pg = await isolatedPersistencePostgres(process.env.DATABASE_URL!);
@@ -88,10 +88,11 @@ pgTest('managed native PostgreSQL import preserves long text, resumed and older 
       expect((await run()).pages.imported).toBe(1);
       expect((await pg.engine.getPage(slug, { sourceId: 'default' }))?.compiled_truth).toContain('complete-ending-marker');
 
-      // Actual MCP dispatch uses the untrusted read boundary; owner CLI remains readable.
+      // Existing MCP access remains available; importing does not impose a new visibility policy.
       const context = { config: { engine: 'postgres' as const }, sourceId: 'default', logger: { info() {}, warn() {}, error() {} } };
       const remote = await dispatchToolCall(pg.engine, 'get_page', { slug }, { ...context, remote: true });
-      expect(remote.isError).toBe(true);
+      expect(remote.isError).not.toBe(true);
+      expect(JSON.stringify(remote.content)).toContain('complete-ending-marker');
       const local = await dispatchToolCall(pg.engine, 'get_page', { slug }, { ...context, remote: false });
       expect(local.isError).not.toBe(true);
       expect(JSON.stringify(local.content)).toContain('complete-ending-marker');

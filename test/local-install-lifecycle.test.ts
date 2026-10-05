@@ -11,10 +11,11 @@ const LOG_DIR = process.env.GBRAIN_TEST_INSTALL_LOG_DIR;
 describe('isolated Bun-linked keyless installation lifecycle', () => {
   let home: string;
   let launcher: string;
+  let workdir: string;
   let env: Record<string, string>;
   let sequence = 0;
 
-  function run(args: string[], command = launcher, cwd = home): string {
+  function run(args: string[], command = launcher, cwd = workdir): string {
     const result = spawnSync(command, args, { cwd, env, encoding: 'utf8', timeout: 120_000, maxBuffer: 8 * 1024 * 1024 });
     const log = `command: ${command} ${args.join(' ')}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}\nexit_status=${result.status}\nsignal=${result.signal}\nerror=${result.error?.message ?? ''}\n`;
     if (LOG_DIR) {
@@ -27,6 +28,9 @@ describe('isolated Bun-linked keyless installation lifecycle', () => {
 
   beforeAll(() => {
     home = mkdtempSync(join(tmpdir(), 'gbrain-install-lifecycle-'));
+    // Keep the native ten-ancestor skill walk inside the isolated installation.
+    workdir = join(home, ...Array.from({ length: 10 }, (_, i) => `cwd-${i}`));
+    mkdirSync(workdir, { recursive: true });
     const bin = join(home, 'bin');
     mkdirSync(bin);
     for (const service of ['systemctl', 'launchctl', 'crontab', 'service']) {
