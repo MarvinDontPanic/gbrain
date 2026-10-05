@@ -86,6 +86,10 @@ export async function runGbrain(h: DoctorHome, args: string[], env: Record<strin
   Object.assign(childEnv, {
     HOME: h.home,
     GBRAIN_HOME: h.home,
+    // Do not let cwd walk-up discover host skills above TMPDIR. A day-zero
+    // fixture with no workspace catalog uses the bundled source-install
+    // catalog, just as the native read-only install-path fallback does.
+    GBRAIN_SKILLS_DIR: existsSync(h.skillsDir) ? h.skillsDir : join(REPO_ROOT, 'skills'),
     GBRAIN_AUDIT_DIR: join(h.home, 'audit'),
     GBRAIN_SYNC_FAILURES_DIR: join(h.home, 'sync-failures'),
     GBRAIN_SKIP_STARTUP_HOOKS: '1',
