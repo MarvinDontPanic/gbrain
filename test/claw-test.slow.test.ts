@@ -31,6 +31,14 @@ const BIN_CACHE = join(REPO_ROOT, 'test', '.cache');
 const BIN_PATH = join(BIN_CACHE, 'gbrain.sh');
 const SCENARIOS_DIR = join(REPO_ROOT, 'test', 'fixtures', 'claw-test-scenarios');
 
+function isolatedRunTmp(home: string): string {
+  // Doctor walks ten cwd ancestors. Keep the harness's generated workspace
+  // within this fixture, away from skills-bearing host TMPDIR ancestors.
+  const dir = join(home, ...Array(10).fill('d'));
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 beforeAll(() => {
   if (!existsSync(BIN_CACHE)) mkdirSync(BIN_CACHE, { recursive: true });
   // Shim that delegates to `bun run src/cli.ts` so PGLite assets resolve from
@@ -51,6 +59,7 @@ describe('gbrain claw-test --scenario fresh-install (scripted)', () => {
           ...process.env,
           GBRAIN_HOME: tmp,
           GBRAIN_BIN_OVERRIDE: BIN_PATH,
+          TMPDIR: isolatedRunTmp(tmp),
           GBRAIN_CLAW_SCENARIOS_DIR: join(REPO_ROOT, 'test', 'fixtures', 'claw-test-scenarios'),
         },
         encoding: 'utf-8',
@@ -293,6 +302,7 @@ describe('gbrain claw-test — adversarial-gate regression pins', () => {
         ...process.env,
         GBRAIN_HOME: tmp,
         GBRAIN_CLAW_SCENARIOS_DIR: SCENARIOS_DIR,
+        TMPDIR: isolatedRunTmp(tmp),
       };
       delete env.GBRAIN_BIN_OVERRIDE;
       const result = spawnSync(BIN_PATH, ['claw-test', '--scenario', 'fresh-install'], {
