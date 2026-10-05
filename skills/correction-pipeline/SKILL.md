@@ -1,13 +1,9 @@
 ---
 name: correction-pipeline
-version: 1.0.0
+version: 1.0.1
 description: |
-  When the user corrects a factual error, root-cause it immediately.
-  Don't just note the correction — trace the error to its source,
-  fix the source, and prevent recurrence. Every factual error is
-  either a data error (bad brain page, bad memory file, bad rendered
-  SOUL/USER identity, bad facts row) or a hallucination (LLM
-  confabulated from partial signals).
+  When the user challenges a factual claim, check it before agreeing.
+  Correct established errors, trace their source, and finish the repair.
 triggers:
   - "that's wrong"
   - "that's not true"
@@ -36,20 +32,31 @@ upstream: correction-pipeline@fc834ee
 
 ## Trigger
 
-ANY factual error the user identifies. No exceptions. No "I'll note that."
+Any factual claim the user challenges or corrects. Check the claim; do not
+assume that a challenge proves an error. An established error requires repair,
+not merely "I'll note that."
 
 (Routing here is a harness convention, not a mechanical guarantee — but once
 this skill is in play, the no-exceptions contract above is the discipline.)
 
 ## Immediate Response
 
-1. **Acknowledge the error.** Don't defend. Don't explain. Just: "You're right. I got that wrong."
-2. **Quote the specific wrong claim** so the user can see you know exactly what was wrong.
-3. **State the correct fact** as the user gave it.
+1. Identify the challenged claim and check the available evidence. The user's
+   own intent, requirements, and reported personal experience are authoritative;
+   a disputed external fact still needs checking.
+2. If the claim was wrong, say what was wrong and state the correction. If it
+   was correct, explain the decisive evidence plainly. Change conclusions for
+   new evidence or clarified requirements, not pressure alone.
+3. Complete the authorized investigation or repair. Lead with the requested
+   result or missing work; an apology or an honest-sounding unknown is not a
+   substitute. If an actual boundary stops work, name it and the next step.
 
 ## Root Cause Analysis (do THIS, not just a memory note)
 
-Run these steps IN ORDER. Report findings to the user.
+Use the relevant checks below to trace an established error. Finding a wrong
+claim in a store does not prove it caused this answer; inspect the actual
+source/history before attributing causation. State unknowns without inventing
+a contamination story. Preserve the requested task while repairing its cause.
 
 ### Step 1: Search the brain
 
@@ -66,8 +73,8 @@ BRAIN_DIR=$(gbrain config get sync.repo_path)
 grep -ri "<wrong claim terms>" "$BRAIN_DIR/people/" "$BRAIN_DIR/companies/" "$BRAIN_DIR/concepts/" 2>/dev/null
 ```
 
-**Question:** Is the wrong fact IN the brain? If yes → the brain is the
-contamination source. Fix the brain page (Step 6).
+**Question:** Is the wrong fact IN the brain? If yes, correct the stored fact
+(Step 6); separately check whether it was used in the failed answer.
 
 ### Step 2: Search memory files
 
@@ -79,8 +86,8 @@ harness):
 grep -ri "<wrong claim terms>" <memory files> 2>/dev/null
 ```
 
-**Question:** Is the wrong fact in memory? If yes → memory is the
-contamination source. Fix the memory file.
+**Question:** Is the wrong fact in memory? If yes, correct it and check whether
+it was present in the failed answer's input.
 
 ### Step 3: Check SOUL.md and USER.md
 
@@ -92,9 +99,9 @@ grep -i "<relevant terms>" <workspace>/SOUL.md <workspace>/USER.md 2>/dev/null
 inference? SOUL.md and USER.md are in every context window — a vague or
 ambiguous line here propagates into every session.
 
-**Important:** on gbrain installs these files are RENDERED from the bootstrap
-answer bank (`state/interview.json`). Note the finding here; the fix goes
-through the answer bank in Step 6, never through a direct edit.
+Resolve the real owner first. Bootstrap-managed files come from the interview
+answer bank; other installations may use a repository-owned identity and
+native symlinks. Edit that source, not a generated file or a private duplicate.
 
 ### Step 4: Check the facts table
 
@@ -111,9 +118,11 @@ Is there a wrong fact with high confidence? Note its fact id.
 |----------------|-------------|-------------|
 | **BRAIN_ERROR** | Wrong fact exists in a brain page | Edit the page in the brain repo, commit, re-sync |
 | **MEMORY_ERROR** | Wrong fact exists in memory files | Fix the memory file |
-| **SOUL_USER_ERROR** | Misleading passage in SOUL.md or USER.md | Fix the ANSWER BANK, re-render — never the rendered file |
+| **SOUL_USER_ERROR** | Misleading passage in identity/context | Fix its actual source owner; re-render only if generated |
 | **FACTS_TABLE_ERROR** | Wrong fact in the gbrain facts table | `recall` → `forget <fact-id>` → `remember` the correction |
-| **HALLUCINATION** | No source — LLM confabulated from partial signals | Name the contamination vector (what partial signals led to it), write a guard fact |
+| **UNSUPPORTED_INFERENCE** | Conclusion not supported by the available evidence | Correct the inference; do not invent its cause or store a procedural guard as a fact |
+| **MISSED_REQUIREMENT** | Answer or work ignored a requirement | Restore the requirement and finish the requested result |
+| **WRONG_CHECK** | Verification tested a substitute outcome | Verify the requested outcome and repair any failure |
 | **STALE_DATA** | Fact was once true but is no longer | Update the source with current truth; supersede the stale fact |
 | **CROSS_CONTAMINATION** | Correct fact about person A attributed to person B | Fix attribution in the source — on BOTH entities |
 
@@ -125,9 +134,8 @@ Is there a wrong fact with high confidence? Note its fact id.
   repo file — or vice versa — leaves the two out of agreement until the next
   sync overwrites one of them.)
 - **MEMORY_ERROR:** Edit the memory file. Add a correction note with date.
-- **SOUL_USER_ERROR:** NEVER edit SOUL.md / USER.md directly — they are
-  rendered files, and a hand edit is silently lost on the next render. Fix the
-  underlying answer in the shared bootstrap answer bank, then re-render:
+- **SOUL_USER_ERROR:** If bootstrap owns the affected file, fix the underlying
+  interview answer, then re-render:
   ```bash
   gbrain bootstrap interview --set KEY "corrected value"   # verbatim, user's words
   gbrain bootstrap interview --show                        # read back
@@ -138,6 +146,9 @@ Is there a wrong fact with high confidence? Note its fact id.
   The full interview discipline (read-back ritual, verbatim answers, backup
   behavior) lives in `skills/soul-audit/SKILL.md` — route through it for
   anything beyond a single-key fix.
+  If a repository owns the identity instead, edit the canonical repository
+  source and use its existing deploy/verify path. Confirm the changed text
+  reaches a fresh agent's native input; file existence alone is not activation.
 - **FACTS_TABLE_ERROR:** Expire the wrong row and write the correction with
   provenance:
   ```bash
@@ -146,12 +157,11 @@ Is there a wrong fact with high confidence? Note its fact id.
   gbrain remember "<correct fact>" \
     --provenance "user correction, YYYY-MM-DD" --entity <entity-slug>
   ```
-- **HALLUCINATION:** There is no source to fix. Identify the partial signal
-  that seeded the confabulation, then write a guard so it can't reseed:
-  ```bash
-  gbrain remember "WRONG: <what was said>. RIGHT: <what is true>. Guard: <instruction to prevent recurrence>" \
-    --provenance "user correction, YYYY-MM-DD (hallucination guard)" --entity <entity-slug>
-  ```
+- **UNSUPPORTED_INFERENCE:** Correct the answer and identify the unsupported
+  step when evidence permits. Put a reusable procedure in its existing owning
+  skill, not a synthetic memory fact. Do not fabricate a causal explanation.
+- **MISSED_REQUIREMENT / WRONG_CHECK:** Restore the original acceptance
+  criteria, do the available work, and verify the real requested result.
 - **STALE_DATA:** Update the source page with current truth (BRAIN_ERROR
   flow), and supersede any stale facts rows (`forget` + `remember` with the
   current truth and fresh provenance).
@@ -190,7 +200,7 @@ Short report:
 |------|-------------|--------|
 | **S1 — Identity error** | Wrong facts about the user's family, heritage, history, core identity | Fix immediately. These contaminate EVERYTHING — every synthesis, every book mirror, every conversation. |
 | **S2 — Entity error** | Wrong facts about a person, company, deal in the brain | Fix brain page, check propagation |
-| **S3 — Context error** | Wrong inference about the user's current state, feelings, situation | Guard fact via `remember`. Usually hallucination. |
+| **S3 — Context error** | Wrong inference about the user's current state, feelings, situation | Check the original context and correct the inference; do not invent a stored fact |
 | **S4 — Minor factual** | Wrong date, wrong number, wrong detail | Fix source, no propagation check needed |
 
 ## Recurring Error Patterns to Watch
@@ -220,12 +230,12 @@ elsewhere in the brain.
 
 ## Contract
 
-This skill guarantees:
+This workflow requires:
 
 - Every factual error gets root-caused, not just noted
 - Source fixes land at the REAL fix surface for the error class (page edit +
-  commit + re-sync; `forget`/`remember` for facts rows; answer bank + re-render
-  for SOUL/USER — never a direct edit to a rendered file)
+  commit + re-sync; `forget`/`remember` for facts rows; the actual identity
+  source owner, with re-rendering only for generated files)
 - Propagation is checked (whole-brain grep + `gbrain search`)
 - The user gets a clear report of what was wrong, why, and what was fixed
 - Routing matches the canonical triggers in the frontmatter
@@ -234,10 +244,10 @@ This skill guarantees:
 
 ## Output Format
 
-The skill's output is the Step 8 root-cause report delivered inline during the
-conversation, plus all source fixes applied (brain-repo edits committed and
-re-synced; facts rows expired/superseded; identity files re-rendered from the
-answer bank).
+Deliver the corrected answer and requested result first, followed by the
+concise Step 8 evidence when useful. Apply and verify the actual source fixes;
+do not make the report a substitute for repair or impose a report template on
+every answer. Written instructions do not guarantee future compliance.
 
 ## Dedup (sharp boundaries)
 
@@ -271,13 +281,12 @@ Follow the [agent operator protocol](../../docs/protocol/AGENT_OPERATOR_v1.md) f
 - **"Noted, I'll remember that."** NO. Trace the source. Fix the source.
 - **Fixing only memory without checking the brain.** The brain is the
   persistent store. Memory gets flushed.
-- **Editing SOUL.md / USER.md directly.** They're rendered from the answer
-  bank; the hand edit dies on the next render and the error comes back. Fix
-  the answer, re-render.
+- **Editing a generated identity view or private duplicate.** Resolve and fix
+  the owning source; use the existing render/deploy path.
 - **Editing the brain-repo file without re-syncing (or the DB row without
   committing).** The two stores drift and the next sync resurrects the error.
 - **Fixing one instance without checking propagation.** Wrong facts spread.
-- **Blaming the hallucination without identifying the partial signal.** Every
-  hallucination has a seed — find it.
-- **Defensive response.** Never explain why you got it wrong before
-  acknowledging it's wrong.
+- **Inventing a hallucination seed or admitting an unestablished error.**
+  Check the claim and causal evidence; separate what is known from what is not.
+- **Defensive response.** Own an established failure before explaining its
+  cause; do not bury unfinished work behind partial successes.
