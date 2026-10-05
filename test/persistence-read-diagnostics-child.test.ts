@@ -24,6 +24,7 @@ async function child(code: string) {
 const workloadImport = JSON.stringify(resolve(import.meta.dir, '../scripts/persistence/read-workload.ts'));
 const engineImport = JSON.stringify(resolve(import.meta.dir, '../src/core/pglite-engine.ts'));
 const admissionImport = JSON.stringify(resolve(import.meta.dir, '../scripts/persistence/read-admission.ts'));
+const diagnosticsImport = JSON.stringify(resolve(import.meta.dir, '../scripts/persistence/read-diagnostics.ts'));
 const options = '{ pages: 5, queries: 20, writers: 1, writesPerWriter: 25 }';
 
 test('tiny keyless manifest retains diagnostics without claiming a full gate', async () => {
@@ -61,6 +62,7 @@ test('RSS failure retains partial reads and safe stage/errno; a successful later
     import { PGLiteEngine } from ${engineImport};
     import { runReadLatencyWorkload } from ${workloadImport};
     import { WriteTimingRecorder } from ${admissionImport};
+    import { ReadDiagnostics } from ${diagnosticsImport};
     let loaded = false; let releaseCommit;
     const committed = new Promise(resolve => { releaseCommit = resolve; });
     const complete = WriteTimingRecorder.prototype.complete;
@@ -69,10 +71,13 @@ test('RSS failure retains partial reads and safe stage/errno; a successful later
       if (loaded) releaseCommit();
       return result;
     };
-    const keyword = PGLiteEngine.prototype.searchKeyword; let reads = 0;
-    PGLiteEngine.prototype.searchKeyword = async function(...args) {
-      if (++reads === 22) { loaded = true; await committed; }
-      return keyword.apply(this, args);
+    // Synchronize on a logical loaded read; native keyword-arm count is not stable.
+    const read = ReadDiagnostics.prototype.read;
+    ReadDiagnostics.prototype.read = function(index, corpusIndex, run) {
+      return read.call(this, index, corpusIndex, async () => {
+        if (this.phase === 'loaded' && index === 0) { loaded = true; await committed; }
+        return run();
+      });
     };
     const execute = PGLiteEngine.prototype.executeRaw;
     const interval = globalThis.setInterval;
@@ -121,6 +126,7 @@ test('late known Bun RSS unavailability is included in final sample counts and p
     import { PGLiteEngine } from ${engineImport};
     import { runReadLatencyWorkload } from ${workloadImport};
     import { WriteTimingRecorder } from ${admissionImport};
+    import { ReadDiagnostics } from ${diagnosticsImport};
     let loaded = false; let releaseCommit;
     const committed = new Promise(resolve => { releaseCommit = resolve; });
     const complete = WriteTimingRecorder.prototype.complete;
@@ -129,10 +135,13 @@ test('late known Bun RSS unavailability is included in final sample counts and p
       if (loaded) releaseCommit();
       return result;
     };
-    const keyword = PGLiteEngine.prototype.searchKeyword; let reads = 0;
-    PGLiteEngine.prototype.searchKeyword = async function(...args) {
-      if (++reads === 22) { loaded = true; await committed; }
-      return keyword.apply(this, args);
+    // Synchronize on a logical loaded read; native keyword-arm count is not stable.
+    const read = ReadDiagnostics.prototype.read;
+    ReadDiagnostics.prototype.read = function(index, corpusIndex, run) {
+      return read.call(this, index, corpusIndex, async () => {
+        if (this.phase === 'loaded' && index === 0) { loaded = true; await committed; }
+        return run();
+      });
     };
     const interval = globalThis.setInterval;
     let sampler; let late = false; let injected = false;
@@ -170,9 +179,18 @@ test('failed loaded lexical arm remains invalid and retains its partial query wi
   const result = await child(`
     import { PGLiteEngine } from ${engineImport};
     import { runReadLatencyWorkload } from ${workloadImport};
-    const original = PGLiteEngine.prototype.searchKeyword; let calls = 0;
+    import { ReadDiagnostics } from ${diagnosticsImport};
+    let failLoadedRead = false;
+    const read = ReadDiagnostics.prototype.read;
+    ReadDiagnostics.prototype.read = function(index, corpusIndex, run) {
+      return read.call(this, index, corpusIndex, async () => {
+        if (this.phase === 'loaded' && index === 2) failLoadedRead = true;
+        return run();
+      });
+    };
+    const original = PGLiteEngine.prototype.searchKeyword;
     PGLiteEngine.prototype.searchKeyword = async function(...args) {
-      if (++calls === 24) throw new Error('unsafe lexical payload');
+      if (failLoadedRead) throw new Error('unsafe lexical payload');
       return original.apply(this, args);
     };
     const result = await runReadLatencyWorkload(${options});

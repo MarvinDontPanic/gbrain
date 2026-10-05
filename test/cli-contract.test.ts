@@ -33,6 +33,9 @@ const STUB = 'run gbrain --help for the full command list';
 
 const emptyHome = mkdtempSync(join(tmpdir(), 'gbrain-cli-contract-empty-'));
 const brainHome = mkdtempSync(join(tmpdir(), 'gbrain-cli-contract-brain-'));
+// Own the native ten-level skills discovery walk instead of inheriting host skills.
+const doctorCwd = join(brainHome, ...Array.from({ length: 10 }, (_, i) => `cwd-${i}`));
+mkdirSync(doctorCwd, { recursive: true });
 afterAll(() => {
   rmSync(emptyHome, { recursive: true, force: true });
   rmSync(brainHome, { recursive: true, force: true });
@@ -174,8 +177,8 @@ describe('D5 json contract: one success and one failure per json-declared comman
         if (row.okE2E) {
           expect(existsSync(join(import.meta.dir, '..', row.okE2E)), `${record.name}: ${row.okE2E} covers the success shape`).toBe(true);
         } else {
-          const ok = await runCli(row.ok, { home: okHome, cwd: okHome, timeoutMs: 120_000 });
-          expect(ok.exitCode, `${record.name} ok: ${ok.stderr.slice(-800)}`).toBe(0);
+          const ok = await runCli(row.ok, { home: okHome, cwd: record.name === 'doctor' ? doctorCwd : okHome, timeoutMs: 120_000 });
+          expect(ok.exitCode, `${record.name} ok: ${ok.stderr.slice(-800)} ${ok.stdout.slice(-5000)}`).toBe(0);
           const lines = parsedShape(record.mode, ok.stdout).length;
           if (!row.okMayBeEmpty) expect(lines).toBeGreaterThan(0);
         }
