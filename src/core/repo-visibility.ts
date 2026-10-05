@@ -39,6 +39,7 @@ import { dirname, join } from 'node:path';
 import { ensureGbrainHome } from './gbrain-home.ts';
 import { durableSsrfFlags } from './git-remote.ts';
 import { isCredentialInjectingProxy } from './execution-env.ts';
+import { forgejoVisibility, nativeGitCredential, type CredentialReader } from './forgejo-visibility.ts';
 
 // ── Subprocess seam (canonical home; bootstrap/repo.ts re-exports) ─────────
 
@@ -188,6 +189,8 @@ export interface VerifyRepoVisibilityOpts {
   repoDir?: string;
   runner?: ExecRunner;
   fetchImpl?: typeof fetch;
+  /** Native Git helper; injectable so tests never open a credential store. */
+  credentialReader?: CredentialReader;
   /** Environment for the proxy-signature check (default process.env). */
   env?: Record<string, string | undefined>;
   /** Per-rung wall-clock cap (default 15s). */
@@ -243,6 +246,13 @@ export async function verifyRepoVisibility(opts: VerifyRepoVisibilityOpts): Prom
       rungs.push({ rung: 'rest', outcome: `failed (${(res.stderr.trim() || `exit ${res.code}`).slice(0, 120)})` });
     }
   } else {
+    const verdict = await forgejoVisibility(url, opts.repoDir,
+      opts.credentialReader ?? (opts.runner ? async () => null : nativeGitCredential), fetchImpl, timeoutMs);
+    if (verdict !== null) {
+      rungs.push({ rung: 'rest', outcome: `Forgejo/Gitea ${verdict}` });
+      if (verdict === 'unverifiable') return { verdict, detail: 'Forgejo/Gitea metadata could not prove this exact repository private', rungs };
+      return { verdict, via: 'rest', detail: `exact repository verified ${verdict} via authenticated Forgejo/Gitea REST`, rungs };
+    }
     rungs.push({ rung: 'rest', outcome: 'not a github.com origin — skipped' });
   }
 
@@ -446,4 +456,3 @@ export function writeVisibilityCache(
     /* cache write failure is never an error — next push just re-verifies */
   }
 }
-

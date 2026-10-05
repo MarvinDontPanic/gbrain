@@ -438,3 +438,7 @@ and `--uninstall` act only on that brain's job.
 ---
 
 *Part of the [GBrain Skillpack](../GBRAIN_SKILLPACK.md).*
+
+## Private Git origins
+
+Workspace push verifies GitHub repository privacy through REST. For an HTTPS Forgejo/Gitea origin, it uses the repository’s native Git credential helper and the same-origin authenticated `/api/v1/repos/{owner}/{repo}` endpoint. Repository identity, clone URL, HTML URL and a Boolean privacy flag must match exactly; redirects, errors and uncertain metadata fail closed. Credentials are never placed in URLs or saved in a new provider configuration. Anonymous denial alone does not prove privacy. The global unverified-remote override is not needed for a verified Forgejo/Gitea repository.
