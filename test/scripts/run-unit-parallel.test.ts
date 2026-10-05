@@ -392,7 +392,7 @@ describe('oom-once', () => {
     const result = spawnSync(
       'bash',
       [join(OROOT, 'scripts', 'run-unit-parallel.sh'), '--shards', '2'],
-      { cwd: OROOT, encoding: 'utf-8', env: { ...process.env, GBRAIN_TEST_NO_MEM_ADAPT: '1', ...env } },
+      { cwd: OROOT, encoding: 'utf-8', env: { ...process.env, GBRAIN_TEST_NO_MEM_ADAPT: '1', GBRAIN_TEST_NO_OOM_FALLBACK: '0', ...env } },
     );
     return { code: result.status ?? -1, stdout: result.stdout || '', stderr: result.stderr || '' };
   }
