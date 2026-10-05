@@ -260,6 +260,7 @@ export const codexAdapter: TranscriptAdapter = {
     let emptyLifecycleOnly = true;
     let startedTurn: string | undefined;
     let abortedTurn: string | undefined;
+    let threadSettingsSeen = false;
 
     for (const line of lines) {
       const t = line.trim();
@@ -274,13 +275,16 @@ export const codexAdapter: TranscriptAdapter = {
       const mapped = mapCodexLine(entry);
       const record = entry as { type?: string; payload?: Record<string, unknown> } | null;
       const payload = record?.payload;
-      if (record?.type === 'event_msg' && payload?.type === 'task_started' && typeof payload.turn_id === 'string') {
+      if (record?.type === 'event_msg' && payload?.type === 'thread_settings_applied' && rawMeta !== undefined && sessionId.trim().length > 0 &&
+        payload.thread_id === sessionId && payload.thread_settings !== null && typeof payload.thread_settings === 'object' && !Array.isArray(payload.thread_settings)) {
+        threadSettingsSeen = true;
+      } else if (record?.type === 'event_msg' && payload?.type === 'task_started' && typeof payload.turn_id === 'string') {
         if (startedTurn) emptyLifecycleOnly = false;
         startedTurn = payload.turn_id;
       } else if (record?.type === 'event_msg' && payload?.type === 'turn_aborted' && typeof payload.turn_id === 'string') {
         if (abortedTurn || startedTurn !== payload.turn_id) emptyLifecycleOnly = false;
         abortedTurn = payload.turn_id;
-      } else if (mapped.kind !== 'session' && !(record?.type === 'response_item' && payload?.type === 'message' &&
+      } else if (!(mapped.kind === 'session' && mapped.sessionId !== undefined && mapped.sessionId.trim().length > 0) && !(record?.type === 'response_item' && payload?.type === 'message' &&
         (payload.role === 'developer' || payload.role === 'user'))) {
         emptyLifecycleOnly = false;
       }
@@ -329,10 +333,11 @@ export const codexAdapter: TranscriptAdapter = {
         messages,
       };
     }
-    // A verified native turn aborted before any typed text is not a lost
+    // Verified settings on an unsent thread or an aborted turn contain no
     // conversation. Unknown records, malformed lines and previews remain drift.
+    const idleThread = threadSettingsSeen && startedTurn === undefined && abortedTurn === undefined;
     const expectedEmpty = sessions === 0 && skippedLines === 0 && !truncated && rawMeta !== undefined &&
-      emptyLifecycleOnly && startedTurn !== undefined && abortedTurn === startedTurn;
+      emptyLifecycleOnly && (idleThread || startedTurn !== undefined && abortedTurn === startedTurn);
     return {
       bytesRead,
       skippedLines,
@@ -340,7 +345,7 @@ export const codexAdapter: TranscriptAdapter = {
       sessions,
       expectedEmpty: expectedEmpty || undefined,
       zeroSessionsReason:
-        sessions === 0 ? (expectedEmpty ? 'native turn aborted before conversation text' :
+        sessions === 0 ? (expectedEmpty ? (idleThread ? 'native thread settings without a conversation turn' : 'native turn aborted before conversation text') :
           'no typed user events or assistant message items in rollout') : undefined,
     };
   },

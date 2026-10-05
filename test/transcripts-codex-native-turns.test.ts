@@ -12,15 +12,60 @@ const start = (turn_id: string) => row('event_msg', { type: 'task_started', turn
 const modern = (turn_id: string, id: string, text: string) => row('event_msg', {
   type: 'item_completed', turn_id, item: { type: 'UserMessage', id, content: [{ type: 'text', text }] },
 });
-async function parse(rows: unknown[]) {
+async function parse(rows: unknown[], opts: { maxBytes?: number; suffix?: string } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'gbrain-native-codex-')); dirs.push(dir);
   const path = join(dir, 'rollout-native.jsonl');
-  writeFileSync(path, rows.map(r => JSON.stringify(r)).join('\n'));
-  const gen = codexAdapter.parse(path); const sessions = [];
+  writeFileSync(path, rows.map(r => JSON.stringify(r)).join('\n') + (opts.suffix ?? ''));
+  const gen = codexAdapter.parse(path, { maxBytes: opts.maxBytes }); const sessions = [];
   let next = await gen.next();
   while (!next.done) { sessions.push(next.value); next = await gen.next(); }
   return { sessions, diag: next.value, path };
 }
+
+test('an unsent native thread with matching settings has no conversation to import', async () => {
+  const settings = row('event_msg', { type: 'thread_settings_applied', thread_id: 'native-example', thread_settings: { model: 'example-model' } });
+  const idle = await parse([header, settings]);
+  expect(idle.sessions).toHaveLength(0);
+  expect(idle.diag.expectedEmpty).toBe(true);
+  expect(idle.diag.zeroSessionsReason).toBe('native thread settings without a conversation turn');
+});
+
+test.each([
+  [header],
+  [header, row('event_msg', { type: 'thread_settings_applied', thread_id: 'another-thread', thread_settings: {} })],
+  [header, row('event_msg', { type: 'thread_settings_applied', thread_id: 'native-example' })],
+  [header, row('event_msg', { type: 'thread_settings_applied', thread_id: 'native-example', thread_settings: null })],
+  [header, row('event_msg', { type: 'thread_settings_applied', thread_id: 'native-example', thread_settings: [] })],
+  [row('event_msg', { type: 'thread_settings_applied', thread_id: 'native-example', thread_settings: {} }), header],
+  [header, row('event_msg', { type: 'thread_settings_applied', thread_id: 'native-example', thread_settings: {} }), row('event_msg', { type: 'future_user_turn', text: 'Unrecognized text.' })],
+  [header, row('event_msg', { type: 'thread_settings_applied', thread_id: 'native-example', thread_settings: {} }), start('unfinished-turn')],
+  [row('session_meta', {}), row('event_msg', { type: 'thread_settings_applied', thread_id: '', thread_settings: {} })],
+  [row('session_meta', { id: '' }), row('event_msg', { type: 'thread_settings_applied', thread_id: '', thread_settings: {} })],
+  [row('session_meta', { id: ' ' }), row('event_msg', { type: 'thread_settings_applied', thread_id: ' ', thread_settings: {} })],
+  [header, row('event_msg', { type: 'thread_settings_applied', thread_id: 'native-example', thread_settings: {} }), row('session_meta', null)],
+  [header, row('event_msg', { type: 'thread_settings_applied', thread_id: 'native-example', thread_settings: {} }), row('session_meta', {})],
+])('incomplete or unknown native lifecycle remains drift (%#)', async (...rows) => {
+  expect((await parse(rows)).diag.expectedEmpty).toBeUndefined();
+});
+
+test('a settings event never excludes a real typed conversation', async () => {
+  const result = await parse([header,
+    row('event_msg', { type: 'thread_settings_applied', thread_id: 'native-example', thread_settings: {} }),
+    row('event_msg', { type: 'user_message', message: 'Preserve this real conversation.' }),
+  ]);
+  expect(result.sessions[0].messages.map(m => m.text)).toEqual(['Preserve this real conversation.']);
+  expect(result.diag.expectedEmpty).toBeUndefined();
+});
+
+test('settings do not excuse malformed lines or a truncated preview', async () => {
+  const settings = row('event_msg', { type: 'thread_settings_applied', thread_id: 'native-example', thread_settings: {} });
+  const malformed = await parse([header, settings], { suffix: '\n{malformed' });
+  expect(malformed.diag.skippedLines).toBe(1);
+  expect(malformed.diag.expectedEmpty).toBeUndefined();
+  const preview = await parse([header, settings], { maxBytes: 100 });
+  expect(preview.diag.truncated).toBe(true);
+  expect(preview.diag.expectedEmpty).toBeUndefined();
+});
 
 test('native completed UserMessage records archive text without injected context or tool traffic', async () => {
   const result = await parse([
