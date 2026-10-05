@@ -24,6 +24,13 @@ export const REPO = join(import.meta.dir, '..', '..');
 const CLI = join(REPO, 'src', 'cli.ts');
 export const JOURNEY_GOLDENS = join(REPO, 'test', 'fixtures', 'agent-contract', 'v1', 'journey');
 
+/** Isolate discovery from host ancestor skills; keep HOME short for native IPC. */
+function journeyCwd(home: string): string {
+  const cwd = join(home, ...Array(10).fill('isolated'));
+  mkdirSync(cwd, { recursive: true });
+  return cwd;
+}
+
 export type StdinMode = 'devnull' | 'silent';
 
 /**
@@ -43,6 +50,8 @@ export function journeyEnv(home: string, extra: Record<string, string | undefine
   env.HOME = home;
   env.GBRAIN_HOME = home;
   env.GBRAIN_SKIP_STARTUP_HOOKS = '1';
+  // The snapshot already excludes .bun runtime state, not arbitrary brain files.
+  env.BUN_RUNTIME_TRANSPILER_CACHE_PATH = join(home, '.bun', 'runtime-cache');
   for (const [k, v] of Object.entries(extra)) {
     if (v === undefined) delete env[k];
     else env[k] = v;
@@ -56,7 +65,7 @@ export interface GbResult { exitCode: number; stdout: string; stderr: string; ms
 export async function gb(home: string, args: string[], opts: { stdin?: StdinMode; cwd?: string; timeoutMs?: number; env?: Record<string, string | undefined> } = {}): Promise<GbResult> {
   const t0 = performance.now();
   const proc = Bun.spawn(['bun', '--no-env-file', 'run', CLI, ...args], {
-    cwd: opts.cwd ?? home,
+    cwd: opts.cwd ?? journeyCwd(home),
     env: journeyEnv(home, opts.env),
     stdin: opts.stdin === 'silent' ? 'pipe' : Bun.file('/dev/null'),
     stdout: 'pipe',
@@ -98,7 +107,7 @@ export interface McpSession {
 export async function mcp(home: string, serveArgs: string[] = [], opts: { cwd?: string; env?: Record<string, string | undefined> } = {}): Promise<McpSession> {
   const transport = new StdioClientTransport({
     command: 'bun', args: ['--no-env-file', 'run', CLI, 'serve', ...serveArgs],
-    cwd: opts.cwd ?? home, env: journeyEnv(home, opts.env), stderr: 'pipe',
+    cwd: opts.cwd ?? journeyCwd(home), env: journeyEnv(home, opts.env), stderr: 'pipe',
   });
   let stderr = '';
   transport.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });

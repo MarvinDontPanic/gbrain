@@ -318,7 +318,10 @@ describe('autoDetectSkillsDir — skills/ symlink confinement', () => {
 
   test('cwd_walk_up: escaping skills symlink is refused', () => {
     if (typeof process.getuid !== 'function') return;
-    const ws = scratch('ws-'); const outside = scratch('outside-');
+    // Keep the bounded ancestor walk inside the workspace fixture.
+    const ws = join(scratch('ws-'), ...Array(10).fill('isolated'));
+    const outside = scratch('outside-');
+    mkdirSync(ws, { recursive: true });
     mkdirSync(join(outside, 'skills'), { recursive: true });
     symlinkSync(join(outside, 'skills'), join(ws, 'skills'));
     const found = autoDetectSkillsDir(ws, {});

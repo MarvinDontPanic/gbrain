@@ -35,7 +35,7 @@ const SETUP = ['0.11.0', '0.14.0', '0.22.4', '0.28.0', '0.53.0'];
 let home = '';
 let tools = '';
 let databasePath = '';
-const keyless = Object.fromEntries([...PROVIDER_ENV_KEYS, 'GBRAIN_PGLITE_SNAPSHOT'].map(key => [key, undefined]));
+const keyless: Record<string, string | undefined> = Object.fromEntries([...PROVIDER_ENV_KEYS, 'GBRAIN_PGLITE_SNAPSHOT'].map(key => [key, undefined]));
 
 function ledger(): CompletedMigrationEntry[] {
   return readFileSync(join(home, '.gbrain', 'migrations', 'completed.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
@@ -43,6 +43,8 @@ function ledger(): CompletedMigrationEntry[] {
 
 beforeAll(async () => {
   home = mkdtempSync(join(tmpdir(), 'gbrain-e8-home-'));
+  // Keep native Bun bytecode in the snapshot's existing runtime-only cache tree.
+  keyless.BUN_RUNTIME_TRANSPILER_CACHE_PATH = join(home, '.bun', 'runtime-cache');
   tools = mkdtempSync(join(tmpdir(), 'gbrain-e8-tools-'));
   const child = join(tools, 'gbrain');
   writeFileSync(child, `#!/bin/sh\nexec "${process.execPath}" --no-env-file --preload "${join(REPO, 'test/helpers/no-network-preload.ts')}" "${join(REPO, 'src/cli.ts')}" "$@"\n`);

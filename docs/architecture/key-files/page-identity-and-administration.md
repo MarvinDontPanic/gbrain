@@ -48,7 +48,7 @@ Behavioral coverage lives in `test/helpers/deep-research-contract.ts`, its
 PGLite/Postgres callers, `test/e2e/deep-research-http.test.ts` (live OAuth
 rescoping/revocation), `test/deep-research-cli.test.ts`,
 `test/persistence-admin-intent.test.ts`,
-`test/persistence-admin-fingerprint.serial.test.ts` (full manifests and topology fields on both engines), and
+`test/persistence-admin-fingerprint.test.ts` (full manifests and topology fields on both engines), and
 `test/e2e/persistence-admin-intent.test.ts` (actual routine and deliberate CLI
 sequences). These tests establish the exercised boundaries, not a universal
 authorization guarantee.

@@ -186,6 +186,7 @@ test/hybrid-degraded-cache-meta.serial.test.ts	R2	R2: mock.module(../src/core/em
 test/hybrid-exclude-private-cache-fold.serial.test.ts	R2	R2: mock.module(../src/core/embedding.ts) replaces modules for every file in the process
 test/hybrid-meta.serial.test.ts	R1	R1: mutates process.env (OPENAI_API_KEY)
 test/hybrid-pool-floor.serial.test.ts	R1	R1: mutates process.env (OPENAI_API_KEY)
+test/hybrid-query-embed-start.serial.test.ts	R2	R2: mock.module embedding and query cache; process-wide gateway and clock/AbortSignal spies
 test/hybrid-reranker-skipped.serial.test.ts	R1	R1: mutates process.env (GBRAIN_HOME, GBRAIN_AUDIT_DIR, VOYAGE_API_KEY)
 test/hybrid-salvage.serial.test.ts	R2	R2: mock.module(../src/core/embedding.ts) replaces modules for every file in the process
 test/hybrid-search-lite.serial.test.ts	R1	R1: mutates process.env (OPENAI_API_KEY)
@@ -261,6 +262,7 @@ test/pglite-repair-command.serial.test.ts	global-state	global-state: R3: constru
 test/pglite-snapshot-timezone.serial.test.ts	R1	R1: mutates process.env (GBRAIN_PGLITE_SNAPSHOT)
 test/pglite-wal-repair.serial.test.ts	global-state	global-state: R3: constructs PGLiteEngine outside beforeAll; R4: PGLiteEngine without an afterAll disconnect; patches process stdout/stderr/console
 test/physical-root-overlap-vanished-dir.serial.test.ts	R2	R2: mock.module(node:fs) makes readdirSync throw ENOENT for one path
+test/postgres-pool-operator-cap.serial.test.ts	R2	R2: mock.module(#postgres) replaces the native client for the process; withEnv pool configuration
 test/projections-drain-cli.serial.test.ts	global-state	global-state: R3: constructs PGLiteEngine outside beforeAll
 test/put-page-push-reporting.serial.test.ts	R1	R1: mutates process.env (GBRAIN_HOME)
 test/query-cache-knobs-hash.serial.test.ts	R1	R1: mutates process.env (GBRAIN_FTS_LANGUAGE)
