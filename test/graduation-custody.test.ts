@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   assertPgliteGraduationOpenable, currentProcessIdentity, graduatedPath, graduationHandOffRequested, inspectGraduationPath,
-  intentMarkerPath, moveAsideHeld, processStartTime, readIntentMarker, readTombstone, registerGraduationRunInProcess, removeTombstone,
+  intentMarkerPath, markerLiveness, moveAsideHeld, processStartTime, readIntentMarker, readTombstone, registerGraduationRunInProcess, removeTombstone,
   TombstonePathOccupiedError, writeIntentMarker, writeTombstone,
 } from '../src/core/persistence/graduation-custody.ts';
 import type { IntentMarker, ManifestState, Tombstone } from '../src/core/persistence/engine-graduation.types.ts';
@@ -74,6 +74,22 @@ describe('intent marker and tombstone files', () => {
 });
 
 describe('inspectGraduationPath and marker liveness', () => {
+  test('recorded foreign or unverifiable identity does not become alive through a local PID', () => {
+    const unregister = registerGraduationRunInProcess('run-identity');
+    try {
+      expect(markerLiveness(marker('run-identity', 'copying', { bootId: 'another-boot' }))).toBe('unknown');
+      expect(markerLiveness(marker('run-identity', 'copying', { pidNs: 'another-namespace' }))).toBe('unknown');
+      expect(markerLiveness(marker('run-parent-identity', 'copying', {
+        pid: process.ppid, pidNs: 'another-namespace', processStart: null,
+      }))).toBe('unknown');
+      if (processStartTime(process.ppid) === null) {
+        expect(markerLiveness(marker('run-parent-identity', 'copying', {
+          pid: process.ppid, processStart: 'recorded-but-unreadable',
+        }))).toBe('unknown');
+      }
+    } finally { unregister(); }
+  });
+
   test('none, in_progress, interrupted, graduated and split_brain', () => {
     const dir = join(root, 'inspect.pglite');
     mkdirSync(dir);
