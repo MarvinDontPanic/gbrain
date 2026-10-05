@@ -20,8 +20,12 @@ describe('findRepoRoot', () => {
   });
 
   function scratch(): string {
-    const dir = mkdtempSync(join(tmpdir(), 'repo-root-'));
-    created.push(dir);
+    const root = mkdtempSync(join(tmpdir(), 'repo-root-'));
+    created.push(root);
+    // Bound discovery's ten-parent walk to this fixture rather than host
+    // skills above TMPDIR. These paths are only used for catalog discovery.
+    const dir = join(root, ...Array(10).fill('isolated'));
+    mkdirSync(dir, { recursive: true });
     return dir;
   }
 
@@ -53,7 +57,7 @@ describe('findRepoRoot', () => {
 
   it('returns null when no skills/RESOLVER.md exists up to filesystem root', () => {
     const empty = scratch();
-    // Deliberately no seedRepo — empty dir; walk terminates at filesystem root.
+    // Deliberately no seedRepo — the bounded walk stays in empty fixture dirs.
     expect(findRepoRoot(empty)).toBeNull();
   });
 

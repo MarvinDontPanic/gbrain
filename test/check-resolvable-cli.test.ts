@@ -22,6 +22,14 @@ const REPO_ROOT = resolve(import.meta.dir, '..');
 // Fixture builders
 // ---------------------------------------------------------------------------
 
+function emptyDiscoveryCwd(root: string): string {
+  // Discovery walks ten parents. An empty tempdir alone does not exclude
+  // host catalogs above TMPDIR; keep this discovery-only cwd inside its fixture.
+  const cwd = join(root, ...Array(10).fill('isolated'));
+  mkdirSync(cwd, { recursive: true });
+  return cwd;
+}
+
 interface SkillSpec {
   name: string;
   triggers?: string[];
@@ -208,7 +216,7 @@ describe('check-resolvable — unit: resolveSkillsDir', () => {
     const empty = mkdtempSync(join(tmpdir(), 'empty-for-resolve-'));
     const original = process.cwd();
     try {
-      process.chdir(empty);
+      process.chdir(emptyDiscoveryCwd(empty));
       const r = resolveSkillsDir({ help: false, json: false, fix: false, dryRun: false, verbose: false, strict: false, skillsDir: null });
       // Install-path fallback succeeds when test runs inside the gbrain repo.
       expect(r.error).toBeNull();
@@ -446,7 +454,7 @@ describe('gbrain check-resolvable CLI — integration', () => {
     try {
       // Pass --fix; expect refusal exit + clear error message.
       const r = spawnSync('bun', ['run', CLI, 'check-resolvable', '--fix'], {
-        cwd: empty,
+        cwd: emptyDiscoveryCwd(empty),
         env: { ...process.env, OPENCLAW_WORKSPACE: '', GBRAIN_SKILLS_DIR: '' },
         encoding: 'utf-8',
       });
