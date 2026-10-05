@@ -702,11 +702,9 @@ function installStdioLifecycle(
     eofDrainStarted = true;
     void (async () => {
       if (eofDrainMs > 0) {
-        // One macrotask so already-parsed requests' handlers (microtasks)
-        // start and increment the counter before the first check.
+        // Let already-parsed request handlers start before checking.
         await new Promise<void>((r) => setTimeout(r, 0));
-        // The SDK can answer before engine-dependent startup completes. EOF
-        // must not disconnect that engine while awaited boot still uses it.
+        // EOF must wait for engine-dependent boot, even if the SDK already answered.
         if (pendingRpcs() > 0 || bootPending()) {
           deps.log(
             `GBrain MCP server: stdin EOF with ${pendingRpcs()} in-flight request(s)${bootPending() ? ' and unfinished boot' : ''} — draining before exit (bound ${eofDrainMs}ms; GBRAIN_SERVE_EOF_DRAIN_MS)`,
@@ -716,9 +714,7 @@ function installStdioLifecycle(
             await new Promise<void>((r) => setTimeout(r, 25));
           }
         }
-        // One extra macrotask: the SDK sends the response in a .then AFTER
-        // the handler resolves — let that stdout write get issued before
-        // the cleanup chain starts.
+        // Let the SDK issue its response before cleanup.
         await new Promise<void>((r) => setTimeout(r, 0));
       }
       beginShutdown(reason);

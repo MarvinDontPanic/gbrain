@@ -162,7 +162,7 @@ export async function submitPageMutation(ctx: OperationContext,
 export async function preparePageAdmission(ctx: OperationContext,
   input: { operation: string; params: Record<string, unknown>; managedFileImport?: true; batch?: PageBatchMember }
 ): Promise<{ prior: WriteRequest; admission?: undefined; typeWarning?: undefined } | { prior?: undefined; admission: WriteAdmission; typeWarning: PageTypeWarning | null }> {
-  if (Object.hasOwn(input.params, 'deferEmbeds')) throw new OperationError('invalid_params', 'Embedding deferral is a server-side policy, not a mutation parameter.');
+  if (Object.hasOwn(input.params, 'deferEmbeds')) throw new OperationError('invalid_params', 'Embedding deferral is a server-side policy, not a mutation parameter.', 'Remove deferEmbeds from the mutation; only the trusted caller context can set it.');
   if (input.operation === 'put_page' && ['kind', 'preview', 'backup_reference'].some(key => Object.hasOwn(input.params, key))) {
     if (ctx.remote !== false || input.managedFileImport !== true || !OWNER_FILE_INTENTS.has(String(input.params.kind)) ||
       ['preview', 'backup_reference'].some(key => Object.hasOwn(input.params, key))) {

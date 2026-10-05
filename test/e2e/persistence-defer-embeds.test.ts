@@ -1,1 +1,3 @@
-import '../persistence-defer-embeds.test.ts';
+import { registerPostgresTests } from '../helpers/test-backends.ts';
+
+await registerPostgresTests(() => import('../persistence-defer-embeds.test.ts'));
