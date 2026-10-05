@@ -315,6 +315,11 @@ reconsidered. The native content hash skips unchanged pages; this is a complete
 rescan, not a second importer. A real partial/error/truncated scan exits nonzero
 and must not be reported as complete. `--dry-run` previews without writing.
 
+Automatic refresh preserves an existing owner quarantine, including when a
+conversation resumes. Only an explicit trusted-owner mutation clears that hold;
+refresh still re-derives content flags, embedding skips and atom completion.
+Do not make withheld evaluation sources searchable by refreshing them.
+
 Schedule only after verifying the native command on this host. Use the runtime's
 own persistent scheduler and a script-only job at the operator's chosen cadence.
 Keep the thin command in its owning repository; the runtime-private script only
