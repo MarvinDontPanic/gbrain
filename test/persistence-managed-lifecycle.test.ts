@@ -151,8 +151,19 @@ test('a file that replaces its vanished origin at the same slug takes over the p
 
 test('two new files whose paths differ only by case are refused rather than guessed', async () => withEnv({ GBRAIN_HOME: home }, async () => {
   for (const engine of engines) {
-    const f = await fixture(engine, { 'notes/Case.md': note('Upper', 'Upper case spelling.'), 'notes/case.md': note('Lower', 'Lower case spelling.') });
-    await expect(performManagedSync(engine, { sourceId: f.id, noPull: true })).rejects.toMatchObject({ code: 'page_identity_changed' });
+    // Commit the pair in Git's index, not through filesystem aliases: APFS
+    // and Windows cannot retain both case spellings as separate disk files.
+    // Stock non-working-tree discovery reads these exact committed blobs.
+    const f = await fixture(engine, { 'notes/Case.md': note('Upper', 'Upper case spelling.') });
+    const lower = execFileSync('git', ['-C', f.root, 'hash-object', '-w', '--stdin'], {
+      input: note('Lower', 'Lower case spelling.'), encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    git(f.root, '-c', 'core.ignorecase=false', 'update-index', '--add', '--cacheinfo', `100644,${lower},notes/case.md`);
+    git(f.root, '-c', 'user.name=Example', '-c', 'user.email=example@example.invalid', 'commit', '-qm', 'case-distinct Git origins');
+    expect(git(f.root, 'ls-tree', '-r', '--name-only', 'HEAD').split('\n')).toEqual(['notes/Case.md', 'notes/case.md']);
+    expect(git(f.root, 'show', 'HEAD:notes/Case.md')).toContain('Upper case spelling.');
+    expect(git(f.root, 'show', 'HEAD:notes/case.md')).toContain('Lower case spelling.');
+    await expect(performManagedSync(engine, { sourceId: f.id, noPull: true, workingTree: false })).rejects.toMatchObject({ code: 'page_identity_changed' });
     expect(await engine.getPage('notes/case', { sourceId: f.id })).toBeNull();
   }
 }), 180_000);

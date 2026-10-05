@@ -24,7 +24,13 @@ export function largeBareRepository(directory: string, count: number): string {
   const work = join(directory, 'bare-work'), bare = join(directory, 'large.git');
   mkdirSync(work, { recursive: true });
   writeLargeWorktree(work, count);
-  const git = (cwd: string, args: string[]) => execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', ...args], { cwd, stdio: 'ignore' });
+  // At 12k objects commit starts automatic repacking. Keep that native work
+  // in the foreground so the immediately following local clone cannot race
+  // loose-object removal. Maintenance and its thresholds remain enabled.
+  const git = (cwd: string, args: string[]) => execFileSync('git', [
+    '-c', 'user.email=t@example.com', '-c', 'user.name=t',
+    '-c', 'maintenance.autoDetach=false', '-c', 'gc.autoDetach=false', ...args,
+  ], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
   git(work, ['init', '--quiet']);
   git(work, ['add', '-A']);
   git(work, ['commit', '--quiet', '-m', 'fixture']);

@@ -105,7 +105,7 @@ List the always-loaded files for this harness and measure each:
 ```bash
 # bytes/2.8 (calibrated for Claude-family tokenizers on markdown, #4988); integer ceil: (n*10+27)/28
 for f in CLAUDE.md AGENTS.md SOUL.md USER.md ACCESS_POLICY.md HEARTBEAT.md MEMORY.md; do
-  [ -f "$f" ] && echo "$f: $(wc -c < "$f") bytes (~$(( ( $(wc -c < "$f") * 10 + 27 ) / 28 )) tokens)"
+  [ -f "$f" ] && echo "$f: $(( $(wc -c < "$f") )) bytes (~$(( ( $(wc -c < "$f") * 10 + 27 ) / 28 )) tokens)"
 done
 ```
 

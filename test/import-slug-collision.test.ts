@@ -82,9 +82,9 @@ describe('slug collisions', () => {
     const root = mkdtempSync(join(tmpdir(), 'collide-owner-'));
     mkdirSync(join(root, 'notes'));
     writeFileSync(join(root, 'notes/Quux Note.md'), `---\ntitle: Owner\n---\nOwner body.\n`);
-    writeFileSync(join(root, 'notes/QUUX NOTE.md'), `---\ntitle: Loser\n---\nLoser body.\n`);
+    writeFileSync(join(root, 'notes/Quux-Note!.md'), `---\ntitle: Loser\n---\nLoser body.\n`);
     await importFromFile(engine, join(root, 'notes/Quux Note.md'), 'notes/Quux Note.md', { noEmbed: true });
-    const b = await importFromFile(engine, join(root, 'notes/QUUX NOTE.md'), 'notes/QUUX NOTE.md', { noEmbed: true });
+    const b = await importFromFile(engine, join(root, 'notes/Quux-Note!.md'), 'notes/Quux-Note!.md', { noEmbed: true });
     expect(b.skip_reason).toBe('slug_collision');
     const [page] = await engine.executeRaw<{ title: string }>(`SELECT title FROM pages WHERE slug = 'notes/quux-note' AND source_id = 'default'`);
     expect(page.title).toBe('Owner');
