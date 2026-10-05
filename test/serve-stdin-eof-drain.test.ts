@@ -93,6 +93,64 @@ function makeHarness(extra: Partial<ServeOptions> = {}): Harness {
 }
 
 describe('stdin-EOF drain (#4409)', () => {
+  test('EOF after a response waits for unfinished engine-dependent boot', async () => {
+    let releaseBoot!: () => void;
+    const boot = new Promise<void>((resolve) => { releaseBoot = resolve; });
+    let enterBoot!: () => void;
+    const entered = new Promise<void>((resolve) => { enterBoot = resolve; });
+    const h = makeHarness({ pendingRpcs: () => 0, eofDrainMs: 5_000,
+      startMcpServer: async () => { enterBoot(); await boot; },
+    });
+    const running = runServe(h.engine as unknown as BrainEngine, [], h.opts);
+    await entered;
+    h.stdin.emit('end'); // SDK response settled, but startup still uses the engine.
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(h.engine.disconnectCalls).toBe(0);
+    } finally {
+      releaseBoot();
+      await running;
+      await h.exited;
+    }
+    expect(h.engine.disconnectCalls).toBe(1);
+  }, 30000);
+
+  test('a signal takes over EOF drain while boot is unfinished', async () => {
+    let releaseBoot!: () => void, enterBoot!: () => void;
+    const boot = new Promise<void>((resolve) => { releaseBoot = resolve; });
+    const entered = new Promise<void>((resolve) => { enterBoot = resolve; });
+    const h = makeHarness({ pendingRpcs: () => 0, eofDrainMs: 5_000,
+      startMcpServer: async () => { enterBoot(); await boot; },
+    });
+    const running = runServe(h.engine as unknown as BrainEngine, [], h.opts);
+    await entered;
+    h.stdin.emit('end');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    h.signals.emit('SIGTERM');
+    try {
+      expect(await h.exited).toBe(0);
+      expect(h.engine.disconnectCalls).toBe(1);
+      expect(h.logs.some((line) => line.includes('graceful exit (SIGTERM)'))).toBe(true);
+    } finally { releaseBoot(); await running; }
+  }, 30000);
+
+  test('unfinished boot does not extend the existing EOF drain bound', async () => {
+    let releaseBoot!: () => void, enterBoot!: () => void;
+    const boot = new Promise<void>((resolve) => { releaseBoot = resolve; });
+    const entered = new Promise<void>((resolve) => { enterBoot = resolve; });
+    const h = makeHarness({ pendingRpcs: () => 0, eofDrainMs: 60,
+      startMcpServer: async () => { enterBoot(); await boot; },
+    });
+    const running = runServe(h.engine as unknown as BrainEngine, [], h.opts);
+    await entered;
+    h.stdin.emit('close');
+    try {
+      expect(await h.exited).toBe(0);
+      expect(h.engine.disconnectCalls).toBe(1);
+      expect(h.logs.some((line) => line.includes('graceful exit (stdin-close)'))).toBe(true);
+    } finally { releaseBoot(); await running; }
+  }, 30000);
+
   test('EOF with in-flight RPCs waits for them before exiting', async () => {
     let pending = 2;
     const h = makeHarness({ pendingRpcs: () => pending, eofDrainMs: 5_000 });

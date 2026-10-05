@@ -367,7 +367,8 @@ export async function runServe(
   // the MCP client log "Failed to parse JSONRPC message" for every line.
   redirectStdoutLoggingToStderr();
 
-  const activateStdioIdleActivityTracking = installStdioLifecycle(engine, args, installGraduationHandoff(engine, opts));
+  let bootPending = true;
+  const activateStdioIdleActivityTracking = installStdioLifecycle(engine, args, installGraduationHandoff(engine, opts), () => bootPending);
 
   const start = opts.startMcpServer ?? startMcpServer;
 
@@ -423,6 +424,7 @@ export async function runServe(
     // initialize frame before the SDK sees it.
     activateStdioIdleActivityTracking();
   } finally {
+    bootPending = false;
     if (bootDeadline) clearTimeout(bootDeadline);
     stopProgressWatch();
   }
@@ -564,6 +566,7 @@ function installStdioLifecycle(
   engine: BrainEngine,
   args: string[],
   opts: ServeOptions,
+  bootPending: () => boolean,
 ): () => void {
   const deps: StdioLifecycleDeps = {
     stdin: opts.stdin ?? process.stdin,
@@ -702,12 +705,14 @@ function installStdioLifecycle(
         // One macrotask so already-parsed requests' handlers (microtasks)
         // start and increment the counter before the first check.
         await new Promise<void>((r) => setTimeout(r, 0));
-        if (pendingRpcs() > 0) {
+        // The SDK can answer before engine-dependent startup completes. EOF
+        // must not disconnect that engine while awaited boot still uses it.
+        if (pendingRpcs() > 0 || bootPending()) {
           deps.log(
-            `GBrain MCP server: stdin EOF with ${pendingRpcs()} in-flight request(s) — draining before exit (bound ${eofDrainMs}ms; GBRAIN_SERVE_EOF_DRAIN_MS)`,
+            `GBrain MCP server: stdin EOF with ${pendingRpcs()} in-flight request(s)${bootPending() ? ' and unfinished boot' : ''} — draining before exit (bound ${eofDrainMs}ms; GBRAIN_SERVE_EOF_DRAIN_MS)`,
           );
           const deadlineAt = Date.now() + eofDrainMs;
-          while (pendingRpcs() > 0 && Date.now() < deadlineAt && !shuttingDown) {
+          while ((pendingRpcs() > 0 || bootPending()) && Date.now() < deadlineAt && !shuttingDown) {
             await new Promise<void>((r) => setTimeout(r, 25));
           }
         }
