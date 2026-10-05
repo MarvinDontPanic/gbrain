@@ -66,7 +66,6 @@
 
 import type { BrainEngine, NewFact } from '../core/engine.ts';
 import type { Page } from '../core/types.ts';
-import { isPrivatePage } from '../core/search/private-visibility.ts';
 import {
   extractFactsFromTurnWithOutcome,
   isFactsExtractionEnabled,
@@ -939,11 +938,6 @@ async function replacePageFacts(
   return inserted;
 }
 
-/** Derived facts and audit rows cannot widen their source conversation's visibility. */
-function inheritConversationVisibility<T extends NewFact>(page: Page, fact: T) {
-  return { ...fact, ...(isPrivatePage(page) ? { visibility: 'private' as const } : {}) };
-}
-
 async function processPage(
   state: ExtractCoreState,
   snapshot: ConversationPageSnapshot,
@@ -1055,12 +1049,12 @@ async function processPage(
       if (await snapshotIsCurrent(state.engine, state.sourceId, snapshot)) {
         if (state.managed) {
           await replacePageFacts(state, snapshot, async tx => [
-            inheritConversationVisibility(page, nonExtractableAuditFact(page.slug, await peekRowNumStart(tx, state.sourceId, page.slug), snapshot.versionToken, reason)),
+            nonExtractableAuditFact(page.slug, await peekRowNumStart(tx, state.sourceId, page.slug), snapshot.versionToken, reason),
           ]);
         } else {
           state.result.orphan_facts_cleaned += await deleteOrphanFactsForPage(state.engine, state.sourceId, page.slug);
           const rowNum = await peekRowNumStart(state.engine, state.sourceId, page.slug);
-          await writeDerivedFacts(state.engine, state.sourceId, page.slug, db => db.insertFacts([inheritConversationVisibility(page, nonExtractableAuditFact(page.slug, rowNum, snapshot.versionToken, reason))], { source_id: state.sourceId })); // gbrain-allow-direct-insert: durable non-extractable audit outcome prevents repeated scans while remaining distinct from successful extraction
+          await writeDerivedFacts(state.engine, state.sourceId, page.slug, db => db.insertFacts([nonExtractableAuditFact(page.slug, rowNum, snapshot.versionToken, reason)], { source_id: state.sourceId })); // gbrain-allow-direct-insert: durable non-extractable audit outcome prevents repeated scans while remaining distinct from successful extraction
         }
         state.result.pages_marked_non_extractable++;
       }
@@ -1170,7 +1164,7 @@ async function processPage(
       // so master's per-row resolveEntitySlug mapper (#4567's independent fix for
       // the same issue) is superseded rather than layered on top.
       const rows = extracted.map((fact, i) => ({
-        ...inheritConversationVisibility(page, fact),
+        ...fact,
         row_num: rowNum + i,
         source_markdown_slug: page.slug,
         source: PER_SEGMENT_SOURCE_PREFIX,
@@ -1215,7 +1209,7 @@ async function processPage(
     // failure so bulk accounting, CLI exit status, cycle status, and rollups all
     // report the page as unfinished. A managed brain publishes it with the
     // page's facts in one transaction.
-    const terminal = inheritConversationVisibility(page, terminalAuditFact(page.slug, rowNum, snapshot.versionToken));
+    const terminal = terminalAuditFact(page.slug, rowNum, snapshot.versionToken);
     if (state.managed) managedRows.push(terminal);
     else await writeDerivedFacts(state.engine, state.sourceId, page.slug, db => db.insertFacts([terminal], { source_id: state.sourceId })); // gbrain-allow-direct-insert: page-level TERMINAL audit row (Codex C7 / E16) marks extraction completion in the durable facts table — there's no fence equivalent because this is internal audit state, not user-facing knowledge
     rowNum++;

@@ -65,7 +65,7 @@ pgTest('managed native PostgreSQL import preserves long text, resumed and older 
       const slug = first.files[0].sessions[0].baseSlug;
       const page = await pg.engine.getPage(slug, { sourceId: 'default' });
       expect(page?.compiled_truth).toContain('complete-ending-marker');
-      expect(page?.frontmatter.visibility).toBe('private');
+      expect(page?.frontmatter.visibility).toBeUndefined();
       expect(page).toMatchObject({ source_kind: 'transcript:codex', source_uri: path, ingested_via: 'cli:transcripts-ingest' });
       expect(existsSync(join(canonical, `${slug}.md`))).toBe(true);
       expect(readFileSync(join(canonical, `${slug}.md`), 'utf8')).toContain('complete-ending-marker');
@@ -512,7 +512,7 @@ pgTest('automatic transcript refresh preserves owner quarantine until explicit n
       expect(resumed.pages.imported).toBe(1);
       const afterResumed = (await pg.engine.readPageSnapshot(slug, { sourceId: 'default' }))!;
       expect(afterResumed.page.frontmatter.quarantine).toEqual(marker);
-      expect(afterResumed.page.frontmatter.visibility).toBe('private');
+      expect(afterResumed.page.frontmatter.visibility).toBeUndefined();
       expect(afterResumed.page.compiled_truth).toContain('A resumed source update is retained while withheld.');
       expect(await pg.engine.getChunks(slug, { sourceId: 'default' })).toHaveLength(0);
       expect(readFileSync(join(canonical, `${slug}.md`), 'utf8')).toContain(marker.detail);

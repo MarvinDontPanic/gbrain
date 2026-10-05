@@ -16,7 +16,7 @@ function body(content: string) {
   return content.slice(content.indexOf('\n---\n', 4) + 5).trim();
 }
 
-describe('complete private conversation rendering', () => {
+describe('complete conversation rendering', () => {
   test('a long message preserves text beyond the former clipping boundary', () => {
     const text = 'A'.repeat(MESSAGE_CHAR_CAP + 50) + 'THE_FINAL_DECISION';
     const result = render(text);
@@ -48,10 +48,10 @@ describe('complete private conversation rendering', () => {
     expect(result.parts.map(part => part.content).join('\n')).toContain('recoverychannel');
   });
 
-  test('personal transcript pages default to private visibility', () => {
+  test('transcript rendering does not impose a new visibility policy', () => {
     const part = render('A harmless fixture decision.').parts[0];
     const end = part.content.indexOf('\n---\n', 4);
-    expect((safeLoad(part.content.slice(4, end)) as Record<string, unknown>).visibility).toBe('private');
+    expect((safeLoad(part.content.slice(4, end)) as Record<string, unknown>).visibility).toBeUndefined();
   });
 
   test('UTC clock labels are explicit in every part, not ambiguous local times', () => {

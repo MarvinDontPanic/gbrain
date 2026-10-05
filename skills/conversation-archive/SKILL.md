@@ -96,8 +96,8 @@ it first, then remove the page immediately with
 brain-repo git history or a synced file may still hold it. Native Claude Code/Codex imports stream the complete captured JSONL file by default; explicit
 `--max-bytes` remains a bounded diagnostic/import choice. Long message text is
 retained in anchored fragments and searchable part pages, never clipped. Pages
-are private by default; trusted local CLI retrieval can read them, while MCP
-cannot. Private parents also force derived facts private. Tool/thinking traffic
+use the brain’s existing visibility policy; the importer does not add a
+separate agent-access restriction. Tool/thinking traffic
 is excluded or represented by adapter-native placeholders; the original
 `source_uri` is evidence for raw tool records, not a claim they were indexed. Providers without a native adapter (e.g. Perplexity) keep
 using the manual conversion below.

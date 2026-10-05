@@ -384,7 +384,6 @@ export function renderSessionParts(
     const frontmatterId = `${identityBase}-p${part}`;
     const fm: Record<string, unknown> = {
       type: 'conversation',
-      visibility: 'private',
       title: of > 1 ? `${title} (part ${part} of ${of})` : title,
       date: dateIso.slice(0, 10),
       timezone: 'UTC',
