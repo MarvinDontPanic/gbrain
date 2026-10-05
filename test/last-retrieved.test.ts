@@ -136,9 +136,8 @@ describe('awaitPendingLastRetrievedWrites', () => {
     // observed at 99.x ms (CI saw 99 with Date.now()).
     expect(dt).toBeGreaterThanOrEqual(99);
     expect(dt).toBeLessThan(300);
-    // C1 fix: snapshot's tracked promises ARE dropped from the set on
-    // timeout so the next drain doesn't see ghosts (daemon leak guard).
-    expect(_peekPendingLastRetrievedWritesForTests()).toBe(0);
+    // The timeout bounds this wait; it does not cancel the UPDATE.
+    expect(_peekPendingLastRetrievedWritesForTests()).toBe(1);
   });
 
   test('bumpLastRetrievedAt with empty pageIds does not track a promise', async () => {
@@ -149,30 +148,25 @@ describe('awaitPendingLastRetrievedWrites', () => {
     expect(result).toEqual({ outcome: 'drained', pending: 0 });
   });
 
-  test('C1 fix: second drain after timeout is clean (daemon leak guard)', async () => {
-    // Adversarial-review C1: in `gbrain serve` (long-lived), a timed-out
-    // IIFE used to stay tracked forever because its `.finally` never
-    // fires. Repeated timeouts would leak references without bound.
-    // After the timeout, the next drain MUST see an empty set and
-    // return immediately rather than re-timing-out on the same ghost.
-    const neverEngine = makeStubEngine({
-      executeRaw: () => new Promise<unknown[]>(() => {
-        /* never */
-      }),
+  test('a timed-out write remains owned until a later drain observes settlement', async () => {
+    let completeWrite!: (value: unknown[]) => void;
+    let writeStarted!: () => void;
+    const started = new Promise<void>((resolve) => { writeStarted = resolve; });
+    const engine = makeStubEngine({
+      executeRaw: () => {
+        writeStarted();
+        return new Promise<unknown[]>((resolve) => { completeWrite = resolve; });
+      },
     });
-    bumpLastRetrievedAt(neverEngine, [1]);
-    await new Promise((r) => setTimeout(r, 10));
+    bumpLastRetrievedAt(engine, [1]);
+    await started;
+    expect(await awaitPendingLastRetrievedWrites(10)).toEqual({ outcome: 'timeout', pending: 1 });
     expect(_peekPendingLastRetrievedWritesForTests()).toBe(1);
 
-    const first = await awaitPendingLastRetrievedWrites(100);
-    expect(first.outcome).toBe('timeout');
+    // The engine-disconnect pass must still see the same in-flight UPDATE.
+    const second = awaitPendingLastRetrievedWrites(100);
+    completeWrite([]);
+    expect(await second).toEqual({ outcome: 'drained', pending: 0 });
     expect(_peekPendingLastRetrievedWritesForTests()).toBe(0);
-
-    // Second drain with no new writes returns immediately.
-    const t0 = Date.now();
-    const second = await awaitPendingLastRetrievedWrites(100);
-    const dt = Date.now() - t0;
-    expect(second).toEqual({ outcome: 'drained', pending: 0 });
-    expect(dt).toBeLessThan(50);
   });
 });

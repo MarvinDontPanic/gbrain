@@ -92,16 +92,9 @@ export async function awaitPendingLastRetrievedWrites(
       `[last-retrieved] drain timed out after ${timeoutMs}ms; ` +
         `${pending} writes still pending`,
     );
-    // Adversarial-review C1: in long-lived daemons (`gbrain serve`), a
-    // timed-out IIFE stays in the set forever because its `.finally`
-    // never fires. Repeated timeouts leak references without bound.
-    // Drop this snapshot's tracked promises explicitly so the next
-    // drain doesn't see ghosts. The IIFEs themselves keep running and
-    // their results are still discarded; we just stop accumulating
-    // references to forever-pending work.
-    for (const p of snapshot) {
-      pendingLastRetrievedWrites.delete(p);
-    }
+    // A drain deadline does not cancel the UPDATE. Keep its ownership
+    // until settlement so the engine's subsequent disconnect drain can
+    // still observe and await it. The tracked promise removes itself.
     return { outcome: 'timeout', pending };
   }
   return { outcome: 'drained', pending: 0 };
