@@ -209,11 +209,11 @@ const HELP = `Usage:
   gbrain transcripts status              # found vs imported gap table
   gbrain transcripts recent [options]
 
-ingest — import retained session logs and chat exports as PRIVATE conversation pages
+ingest — import retained session logs and chat exports under the brain's existing access policy
 (readable text-turn archive: user/assistant text only, secrets redacted,
 complete messages split into searchable parts). Live Claude Code/Codex logs use
 a captured file boundary; Hermes uses a consistent SQLite snapshot. Unchanged pages hash-skip.
-Trusted local CLI can recall private pages; agent-facing MCP cannot retrieve them.
+Existing visibility and explicit owner quarantine holds are preserved on refresh.
 Embedding is OFF by default; run the embed backfill later or opt in.
 
   --all             Import every session log discovered under the harness
