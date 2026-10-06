@@ -484,3 +484,42 @@ describe('redactSession — the echo dictionary spans every field of the session
     expect(renderSessionParts(red).parts[0].content).not.toContain(SEEDED_ENTROPIC);
   });
 });
+
+
+describe('redactSession — explicit natural-language login pairs', () => {
+  test('redacts low-entropy login pairs while retaining surrounding prose and punctuation', () => {
+    const input = 'Local UI login: sample / simple. Keep simple wording; ratio 3 / 4.';
+    const red = redactSession(session([{role: 'user', text: input, timestamp: '2026-08-02T09:00:03Z'}]), {patterns: []});
+    expect(red.session.messages[0].text).toBe('Local UI login: <REDACTED:login-pair>. Keep simple wording; ratio 3 / 4.');
+    expect(red.redactionCount).toBe(1);
+    expect(renderSessionParts(red).parts[0].content).not.toContain('sample / simple');
+  });
+  test('redacts a complete slash-containing password instead of leaking its suffix', () => {
+    const red = redactSession(session([{role: 'user', text: 'Login: alpha / easy/pass; keep this context.', timestamp: '2026-08-02T09:00:03Z'}]), {patterns: []});
+    expect(red.session.messages[0].text).toBe('Login: <REDACTED:login-pair>; keep this context.');
+    expect(red.redactionCount).toBe(1);
+  });
+  test('applies the same explicit-pair rule to every persisted text surface', () => {
+    const red = redactSession(session([
+      {role: 'user', text: 'LOGIN:	alpha/beta', speaker: 'credentials: gamma / delta', timestamp: '2026-08-02T09:00:03Z'},
+    ], {title: 'Login: epsilon/zeta!', raw: {note: 'Credentials: eta/theta; more context', count: 7}}), {patterns: []});
+    expect(red.session.messages[0].text).toBe('LOGIN:	<REDACTED:login-pair>');
+    expect(red.session.messages[0].speaker).toBe('credentials: <REDACTED:login-pair>');
+    expect(red.session.meta.title).toBe('Login: <REDACTED:login-pair>!');
+    expect(red.session.meta.raw).toEqual({note: 'Credentials: <REDACTED:login-pair>; more context', count: 7});
+    expect(red.redactionCount).toBe(4);
+  });
+  test('redacting an already redacted session is idempotent and makes no new claim', () => {
+    const first = redactSession(session([{role: 'user', text: 'Login: alpha / beta. Keep this context.', timestamp: '2026-08-02T09:00:03Z'}]), {patterns: []});
+    const second = redactSession(first.session, {patterns: []});
+    expect(first.redactionCount).toBe(1);
+    expect(second.session).toEqual(first.session);
+    expect(second.redactionCount).toBe(0);
+  });
+  test('does not redact ordinary slash prose, URLs, paths, or multiline unrelated fields', () => {
+    const input = 'Check login/logout; UI/login works. Ratio 3 / 4. Use docs/reference. Login: https://example.test/path. Login:\noptions / settings.';
+    const red = redactSession(session([{role: 'user', text: input, timestamp: '2026-08-02T09:00:03Z'}]), {patterns: []});
+    expect(red.session.messages[0].text).toBe(input);
+    expect(red.redactionCount).toBe(0);
+  });
+});

@@ -168,6 +168,14 @@ export function redactSession(
   const apply = (p: RedactionPlan): string => {
     redactionCount += p.redactions.length;
     let out = applyRedaction(p);
+    // Explicit prose credentials may be short ordinary words and therefore
+    // correctly fall below the shared scanner's token/entropy floors. Require
+    // the login/credentials label; never scrub those words independently.
+    out = out.replace(/(\b(?:login|credentials)[ \t]*:[ \t]*)([^\s/`"'<>]+[ \t]*\/[ \t]*[^\s/`"'<>][^\s`"'<>]*)/gi,
+      (_match, label: string, pair: string) => {
+        redactionCount++;
+        return label + '<REDACTED:login-pair>' + (pair.match(/[.,;!?]+$/)?.[0] ?? '');
+      });
     for (const { regex } of patterns) {
       out = out.replace(regex, () => {
         redactionCount++;
