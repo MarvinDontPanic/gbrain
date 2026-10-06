@@ -5,7 +5,7 @@
  * withheld when the sweep cannot run. Postgres arm: test/e2e/w5-persistence-postgres.test.ts.
  */
 import { expect, test } from 'bun:test';
-import { managedStaleSweep, managedStaleSweepKeepsNormalizedTimeline, staleExtractionWithheldWhenItCannotRun } from './helpers/w5-scenarios.ts';
+import { managedStaleSweepSeesConcurrentTarget, managedStaleSweep, managedStaleSweepKeepsNormalizedTimeline, staleExtractionWithheldWhenItCannotRun } from './helpers/w5-scenarios.ts';
 
 test('managed extract --stale publishes through the coordinator and clears the recommendation', () => managedStaleSweep(), 120_000);
 test('managed extract --stale does not duplicate a stored row that differs only by whitespace', () => managedStaleSweepKeepsNormalizedTimeline(), 120_000);
@@ -18,3 +18,5 @@ test('the remediation plan reports blocked stale extraction with its reason', as
   expect(classifyChecks(checks, { staleExtractionBlocked: 'pack unavailable' })).toContainEqual(
     { check: 'links_extraction_lag', status: 'blocked', reason: 'pack unavailable' });
 });
+
+test('managed sweep sees a concurrently created target without a catalogue cache', () => managedStaleSweepSeesConcurrentTarget(), 120_000);

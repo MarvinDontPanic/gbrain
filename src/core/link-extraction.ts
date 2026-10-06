@@ -1410,11 +1410,11 @@ export interface SlugResolver {
  */
 const BASENAME_KEEP_RE = new RegExp(`[^${SLUG_WORD_CHARS}\\s\\-]`, 'gu');
 export function normalizeBasename(s: string): string {
-  // The accent strip cannot fold stroke letters \u2014 Unicode gives them no
-  // decomposition \u2014 so the shared table runs after it, on both the index and
-  // the query side. Without it a display name keeps the unfolded letter while
-  // the ASCII page slug does not, and the lookup misses in silence:
-  // `[[\u0110\u1ee9c Example]]` keyed `\u0111uc-example` and never found `people/duc-example`.
+  // Canonical ASCII slugs are already fixed points of the Unicode/folding path.
+  if (s && !/[^a-z0-9-]|^-|-$|--/.test(s)) return s;
+  // Accent stripping does not fold stroke letters; the shared Latin-fold table
+  // runs afterward on both index and query paths. Otherwise `[[\u0110\u1ee9c Example]]`
+  // stays `\u0111uc-example` instead of `people/duc-example`, silently missing the page.
   const folded = foldNonDecomposingLatin(
     s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').normalize('NFC')
       .replace(SLUG_VARIATION_SELECTORS_RE, '').toLowerCase(), // twin of slugifySegment's strip (#4985)

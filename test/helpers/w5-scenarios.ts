@@ -20,6 +20,7 @@ import { withCoordinatedWrite } from '../../src/core/persistence/context.ts';
 import { TEST_WRITE_ATTRIBUTION } from './write-attribution.ts';
 import { acquireWorktree, getWorktreeBinding } from '../../src/core/persistence/ownership.ts';
 import { extractStaleFromDB } from '../../src/commands/extract.ts';
+import { extractManagedStaleLinks } from '../../src/core/persistence/links-maintenance.ts';
 import { computeRecommendations } from '../../src/core/brain-score-recommendations.ts';
 import { staleExtractionBlocked } from '../../src/core/remediation/context.ts';
 import { LINK_EXTRACTOR_VERSION_TS } from '../../src/core/link-extraction.ts';
@@ -255,5 +256,36 @@ export async function staleExtractionWithheldWhenItCannotRun(databaseUrl?: strin
     await engine.setConfig('schema_pack.source.default', 'gbrain-base');
     expect(await staleExtractionBlocked(engine)).toBeUndefined();
     expect(await recommended(engine)).toBe(true);
+  }, { databaseUrl });
+}
+
+/** A concurrent target remains discoverable by a later page in the SAME managed sweep. */
+export async function managedStaleSweepSeesConcurrentTarget(databaseUrl?: string) {
+  await managedBrain(async ({ engine, ctx }) => {
+    await engine.setConfig('auto_link', 'false');
+    await engine.setConfig('link_resolution.global_basename', 'true');
+    await put(ctx, 'companies/acme-example', 'An existing company.', 'company');
+    await put(ctx, 'notes/first', 'See [[acme-example]].');
+    await put(ctx, 'notes/second', 'See [[acme-example]] and [[late-example]].');
+    await disposePersistenceConsumer(engine);
+    const actualGetAllSlugs = engine.getAllSlugs.bind(engine);
+    let inserted = false;
+    engine.getAllSlugs = async (...args) => {
+      const slugs = await actualGetAllSlugs(...args);
+      if (!inserted) {
+        inserted = true;
+        await put(ctx, 'companies/late-example', 'A concurrently created company.', 'company');
+        await disposePersistenceConsumer(engine);
+      }
+      return slugs;
+    };
+    try {
+      await extractManagedStaleLinks(engine, { sourceId: 'default', mentions: false });
+      await extractManagedStaleLinks(engine, { sourceId: 'default', mentions: false });
+      const rows = await engine.executeRaw(`SELECT l.link_type,l.link_source FROM links l
+        JOIN pages f ON f.id=l.from_page_id JOIN pages t ON t.id=l.to_page_id
+        WHERE f.slug='notes/second' AND t.slug='companies/late-example'`);
+      expect(rows).toContainEqual({ link_type: 'wikilink_basename', link_source: 'wikilink-resolved' });
+    } finally { engine.getAllSlugs = actualGetAllSlugs; }
   }, { databaseUrl });
 }

@@ -2346,3 +2346,9 @@ describe('#4995 — markdown link anchors are stripped, pass-1 targets lowercase
     expect(wiki.candidates.map(c => c.targetSlug)).toContain('people/alice');
   });
 });
+
+// The canonical fast path must not accept punctuation, edge/repeated hyphens or line endings.
+test('canonical ASCII normalization preserves fixed points and full fallback semantics', () => {
+  for (const s of ['a','0','acme-example','0123-abc','a-b-c']) expect(normalizeBasename(s)).toBe(s);
+  for (const [s,expected] of [['',''],['--',''],['-acme-','acme'],['acme--example','acme-example'],['a.b_c!','abc'],['acme\n','acme'],['acme\r\n','acme'],[' acme ','acme'],['ACME','acme'],['Café','cafe'],['Đức Example','duc-example'],['루카텍 미팅','루카텍-미팅']]) expect(normalizeBasename(s)).toBe(expected);
+});
