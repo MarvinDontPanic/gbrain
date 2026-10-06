@@ -159,6 +159,15 @@ describe('@effective qualifier', () => {
     expect(range('@occurred:2024-01-01')).toBe('refused');
   });
 
+  test('extra separators are refused without interpreting a different range', () => {
+    for (const text of ['@effective[2024,,2025)', '@effective[2024,2025,)', '@effective[a,b,c)', '@effective[,,)']) {
+      expect(parseEffectiveQualifier(text)).toMatchObject({ kind: 'refused', reason: 'invalid_range' });
+      const parsed = facts('- [idea] ' + text + ' stays literal');
+      expect(parsed[0].claim).toBe(text + ' stays literal');
+      expect(parsed[0].effective).toBeNull();
+    }
+  });
+
   test('handles and emails are not qualifiers', () => {
     expect(range('@alice said hi')).toBe('none');
     expect(range('paul@example.com')).toBe('none');

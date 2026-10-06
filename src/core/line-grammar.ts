@@ -84,7 +84,7 @@ const TYPE_TOKEN_RE = /^[A-Za-z][A-Za-z0-9_-]{0,39}$/;
 const CATEGORY_STOPLIST = new Set(['x', 'todo', 'done', 'wip']);
 const TYPE_STOPLIST = new Set(['see', 'also', 'cf', 'via', 'and', 'or', 'with', 'from', 're', 'by', 'to', 'per', 'and/or']);
 const LIST_ITEM_RE = /^([ \t]*)(?:[-*+]|\d{1,9}[.)])[ \t]+(.*)$/;
-const QUALIFIER_RE = /^@([A-Za-z][A-Za-z0-9_]*)([[(])([^\][()]*),([^\][()]*)([\])])(?=\s|$)/;
+const QUALIFIER_RE = /^@([A-Za-z][A-Za-z0-9_]*)([[(])([^\][(),]*),([^\][(),]*)([\])])(?=\s|$)/;
 const QUALIFIER_LIKE_RE = /^@([A-Za-z][A-Za-z0-9_]*)[[(:]/;
 const LINK_RE = /\[\[[^\]\n]+\]\]|\[[^\][\n]+\]\([^)\n]+\)/g;
 const LINE_TEXT_MAX = 160;
