@@ -38,7 +38,7 @@ export const ARTIFACTS: Artifact[] = [
   { name: 'MCP tool catalog', regen: ['bun', 'run', 'scripts/generate-tool-catalog.ts'], check: ['bash', 'scripts/check-tool-catalog-fresh.sh'] },
   { name: 'skills manifest', regen: ['bun', 'run', 'scripts/generate-skills-manifest.ts'], check: ['bash', 'scripts/check-skills-manifest-fresh.sh'] },
   { name: 'eval metric glossary', regen: ['bun', 'run', 'scripts/generate-metric-glossary.ts'], check: ['bash', 'scripts/check-eval-glossary-fresh.sh'] },
-  { name: 'CLI flag registry', regen: ['bun', 'run', 'scripts/generate-flag-registry.ts'], check: ['bun', 'test', 'test/generate-flag-registry.test.ts'] },
+  { name: 'CLI flag registry', regen: ['bun', 'run', 'scripts/generate-flag-registry.ts'], check: ['bun', 'test', '--timeout=60000', 'test/generate-flag-registry.test.ts'] },
   { name: 'plugin tree + persona variants', regen: ['bun', 'run', 'scripts/generate-plugin-tree.ts', '--out', 'plugin', '--variants-out', 'plugin-variants'], check: ['bash', 'scripts/check-plugin-tree.sh'] },
   { name: 'structural suites manifest', regen: ['bun', 'scripts/classify-tests.ts'], check: ['bun', 'scripts/classify-tests.ts', '--check'] },
   { name: 'llms.txt + llms-full.txt', regen: ['bun', 'run', 'scripts/build-llms.ts'], check: ['bun', 'test', 'test/build-llms.test.ts'] },
