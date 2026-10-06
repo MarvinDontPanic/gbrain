@@ -88,10 +88,15 @@ written up in [`RETRIEVAL_MAXPOOL_INCIDENT.md`](../incidents/RETRIEVAL_MAXPOOL_I
   candidate set before the user `LIMIT`, via the shared `buildBestPerPagePoolCte`
   in `sql-ranking.ts`. The vector side returns N distinct pages by best chunk,
   not N chunks that collapse to fewer pages downstream. When one dense page's
-  chunks fill the inner candidate pool, the engines escalate the pool in a
-  bounded loop (×4 per step, at most 3 escalations). SQL candidate limits and
-  offsets are independent of `ef_search`; supported pgvector versions use
-  strict iterative scans with bounded visits. A filtered short pool is not
+  chunks fill the inner candidate pool, non-iterative searches retain the
+  bounded escalation loop (×4 per step, at most 3 escalations). Indexed
+  relaxed iterative scans collect the existing 20,000-candidate/visit envelope
+  from the first read: a filled early window can omit closer candidates
+  discovered later. This remains bounded ANN collection, not an exact-neighbour
+  guarantee; the eight-second deadline and per-page/post-weight sort remain.
+  SQL candidate limits and offsets are independent of `ef_search`; supported
+  versions preserve the configured initial list and use relaxed iterative scans
+  with bounded visits. A filtered short pool is not
   proof that the corpus is exhausted. Postgres may make one exact fallback
   inside the remaining eight-second arm budget; PGLite does not pretend that
   a JavaScript timeout can cancel its WASM work. Unresolved shortfalls appear

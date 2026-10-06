@@ -6,6 +6,48 @@ import type { SearchOpts } from '../../src/core/types.ts';
 type PoolMeta = Parameters<NonNullable<SearchOpts['onVectorPoolMeta']>>[0];
 
 describe('bounded vector candidate safety', () => {
+  test('a filled early relaxed-order window does not discard closer late candidates', async () => {
+    // A relaxed ANN scan can discover the closest item after many valid,
+    // weaker candidates. Enough result rows is not evidence that the
+    // scan's already-bounded candidate envelope has been collected.
+    const candidates = Array.from({ length: 6_000 }, (_, i) => ({ page_id: i, score: i === 5_999 ? 0.95 : 0.6 }));
+    const attempts: VectorPoolAttempt[] = [];
+    const rows = await searchVectorPool(10, 100, true, true, 'postgres', async attempt => {
+      attempts.push(attempt);
+      const available = candidates.slice(0, Math.min(attempt.innerLimit, attempt.maxScanTuples));
+      return { rows: [...available].sort((a, b) => b.score - a.score).slice(0, 10), candidatePool: available.length };
+    }, async () => true, undefined);
+    expect(rows[0]).toEqual({ page_id: 5_999, score: 0.95 });
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0].remainingMs).toBeGreaterThan(0);
+    expect(attempts[0].remainingMs).toBeLessThanOrEqual(8_000);
+  });
+
+  test('an incomplete full iterative envelope is not read again with identical bounds', async () => {
+    const attempts: VectorPoolAttempt[] = [];
+    const events: PoolMeta[] = [];
+    await searchVectorPool(10, 100, true, true, 'pglite', async attempt => {
+      attempts.push(attempt);
+      return { rows: [{ page_id: 1 }], candidatePool: 20_000 };
+    }, async () => true, meta => events.push(meta));
+    expect(attempts).toHaveLength(1);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ reason: 'candidate_budget', incomplete: true, exactFallback: false });
+  });
+
+  test('nonindexed and pre-iteration searches retain their existing candidate policy', async () => {
+    for (const [iterative, indexed] of [[true, false], [false, true], [false, false]]) {
+      const attempts: VectorPoolAttempt[] = [];
+      await searchVectorPool(1, 100, iterative, indexed, 'pglite', async attempt => {
+        attempts.push(attempt);
+        return { rows: [{ page_id: 1 }], candidatePool: 1 };
+      }, async () => false, undefined);
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0].innerLimit).toBe(100);
+      expect(attempts[0].maxScanTuples).toBe(2_000);
+    }
+  });
+
   test('extension capability comes from the installed version, including older releases', () => {
     for (const version of [undefined, '', 'invalid', '0.7.4', '0.6.2']) expect(supportsHnswIterativeScan(version)).toBe(false);
     for (const version of ['0.8.0', '0.8.1', '0.10.0', '1.0.0']) expect(supportsHnswIterativeScan(version)).toBe(true);
@@ -16,17 +58,18 @@ describe('bounded vector candidate safety', () => {
     expect(readVectorPool([{ page_id: 2, candidate_pool: 8 }])).toEqual({ rows: [{ page_id: 2, candidate_pool: 8 }], candidatePool: 8 });
   });
 
-  test('a filtered short ANN pool is not mistaken for corpus exhaustion', async () => {
+  test('a filtered short full ANN envelope is not mistaken for corpus exhaustion', async () => {
     const attempts: VectorPoolAttempt[] = [];
     const events: PoolMeta[] = [];
     const rows = await searchVectorPool(75, 375, true, true, 'pglite', async attempt => {
       attempts.push(attempt);
       return { rows: Array.from({ length: attempts.length === 1 ? 8 : 75 }, (_, page_id) => ({ page_id })), candidatePool: attempts.length === 1 ? 8 : 375 };
     }, async () => true, meta => events.push(meta));
-    expect(rows).toHaveLength(75);
-    expect(attempts.map(a => a.innerLimit)).toEqual([375, 1500]);
+    expect(rows).toHaveLength(8);
+    expect(attempts.map(a => a.innerLimit)).toEqual([20_000]);
     expect(attempts.every(a => !a.exact)).toBe(true);
-    expect(events).toEqual([]);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ incomplete: true, reason: 'candidate_budget' });
   });
 
   test('a zero-row ANN pool remains visibly incomplete when eligible rows exist', async () => {
@@ -37,9 +80,9 @@ describe('bounded vector candidate safety', () => {
       return { rows: [], candidatePool: 0 };
     }, async () => true, meta => events.push(meta));
     expect(rows).toEqual([]);
-    expect(attempts).toHaveLength(4);
+    expect(attempts).toHaveLength(1);
     expect(attempts.every(a => a.maxScanTuples <= 20_000 && !a.exact)).toBe(true);
-    expect(events).toEqual([{ underfilled: true, incomplete: true, reason: 'candidate_budget', escalations: 3, innerLimit: 20_000, candidatePool: 0, exactFallback: false }]);
+    expect(events).toEqual([{ underfilled: true, incomplete: true, reason: 'candidate_budget', escalations: 0, innerLimit: 20_000, candidatePool: 0, exactFallback: false }]);
   });
 
   test('proved empty and small corpora do not emit degraded metadata', async () => {
@@ -112,9 +155,10 @@ describe('bounded vector candidate safety', () => {
       return { rows: Array.from({ length: first ? 4 : 10 }, (_, page_id) => ({ page_id })), candidatePool: first ? 60 : 400, eligiblePool: first ? 4 : 30 };
     }, async pool => { asked.push(pool); return 30 > pool; }, meta => events.push(meta));
     expect(asked).toEqual([4]);
-    expect(attempts.map(a => a.innerLimit)).toEqual([100, 400]);
-    expect(rows).toHaveLength(10);
-    expect(events).toEqual([]);
+    expect(attempts.map(a => a.innerLimit)).toEqual([20_000]);
+    expect(rows).toHaveLength(4);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ incomplete: true, reason: 'candidate_budget' });
   });
 
   test('#5824: eligible_pool is read next to the raw candidate_pool', () => {
