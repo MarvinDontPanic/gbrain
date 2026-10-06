@@ -84,7 +84,7 @@ export async function importManagedFile(engine: BrainEngine, filePath: string, s
 }
 
 /** Runs the managed-import preparer on an unadmitted request; true only when the no-op kernel finds nothing to publish. */
-async function unchangedManagedImport(ctx: OperationContext, binding: WorktreeBinding, intent: ManagedImportIntent, snapshot: PageSnapshot | null): Promise<boolean> {
+export async function unchangedManagedImport(ctx: OperationContext, binding: WorktreeBinding, intent: ManagedImportIntent, snapshot: PageSnapshot | null): Promise<boolean> {
   if (!snapshot) return false;
   try {
     const authority = await submissionAuthority(ctx, 'put_page', binding.source_id, binding.source_incarnation, intent.slug);

@@ -9,7 +9,7 @@
  *
  *   detect → adapter.parse (AsyncGenerator, per-session) → since/limit
  *   filters → redactSession (fail-closed) → renderSessionParts →
- *   importFromContent per part (embed OFF unless opted in) →
+ *   native page persistence per part (embed OFF unless opted in) →
  *   putRawData(baseSlug) → stale-part reconciliation (delete part > of).
  *
  * Error taxonomy:
@@ -27,9 +27,32 @@
  * must never skip work permanently.
  */
 
+import { existsSync, realpathSync } from 'node:fs';
+import { join, relative } from 'node:path';
+import { atomicWriteFileSync, mkdirPrivate } from '../atomic-write.ts';
+import { ensureGbrainHome } from '../gbrain-home.ts';
+import { localHostId } from '../persistence/identity.ts';
+import { resolveSourceLocalFilePath } from '../markdown.ts';
+import { recordedPathFromFileUri, scannerSlugRootMode } from '../write-through.ts';
+import { managedImportContent, readImportBytes, type ManagedImportIntent } from '../persistence/import-prepare.ts';
+import { unchangedManagedImport } from '../persistence/import-mutations.ts';
+import type { PageSnapshot } from '../page-state/types.ts';
+import { QUARANTINE_KEY } from '../quarantine.ts';
 import type { BrainEngine } from '../engine.ts';
+import type { Page } from '../types.ts';
 import { importFromContent } from '../import-file.ts';
 import { canonicalJson } from '../remediation-step.ts';
+import { loadConfig } from '../config.ts';
+import { OperationError, type OperationContext } from '../ops/contract.ts';
+import { currentSubmissionAuthority } from '../minions/submission-authority.ts';
+import { currentVerifiedLocalWriter } from '../persistence/identity.ts';
+import { initializeLocalPersistence, requestPrincipalForContext, submitPageMutation } from '../persistence/page-mutations.ts';
+import { assertReplayIntent, getWriteRequest, intentDigest } from '../persistence/journal.ts';
+import { digest, sha256 } from '../persistence/digest.ts';
+import { isTerminal } from '../persistence/model.ts';
+import { prepareFileTarget } from '../persistence/page-prepare.ts';
+import { getWorktreeBinding } from '../persistence/ownership.ts';
+import { authorizeStoredRequest } from '../persistence/authority.ts';
 import type { FileDiagnostics, TranscriptAdapter, TranscriptFormat } from './types.ts';
 import { detectAdapter } from './detect.ts';
 import {
@@ -62,13 +85,17 @@ export interface TranscriptsIngestOpts {
   sourceId: string;
   /** Embedding opt-in (default OFF: bulk imports defer to the embed backfill). */
   embed?: boolean;
+  /** After repairing a terminal native failure, explicitly permit one new attempt. */
+  retryFailed?: boolean;
   /**
    * gbrain#4149: explicit byte-cap OVERRIDE threaded to every adapter's
    * parse. Undefined = each adapter keeps its own format-specific default
-   * (Hermes 512MB store guard, 50MB jsonl cap, ...) — the override exists
+   * (native indexed SQLite and complete streamed JSONL imports, ...) — the override exists
    * for legitimate oversized stores, not to replace the defaults.
    */
   maxBytes?: number;
+  /** Optional exact source-native session origins (distinct from brain sources). */
+  sessionSources?: string[];
   activePack?: IngestActivePack;
   /** Test seam for the redaction user-pattern file. */
   userPatternsPath?: string;
@@ -156,6 +183,23 @@ function lastMessageTs(messages: Array<{ timestamp: string }>): string {
 
 const RUN_ABORT_MARKER = 'transcripts-ingest run abort';
 
+/** Native transcript identity is scoped to its brain source, never a slug date. */
+async function readTranscriptParts(engine: BrainEngine, sourceId: string, harness: TranscriptFormat, sessionId: string) {
+  try {
+    return await engine.executeRaw<{ slug: string; part: string }>(
+      `SELECT slug, frontmatter->'transcript_import'->>'part' AS part FROM pages
+       WHERE source_id = $1 AND deleted_at IS NULL
+         AND frontmatter->'transcript_import'->>'harness' = $2
+         AND frontmatter->'transcript_import'->>'session_id' = $3`,
+      [sourceId, harness, sessionId],
+    );
+  } catch (error) {
+    throw new Error(`${RUN_ABORT_MARKER}: canonical transcript identity lookup failed: ${
+      error instanceof Error ? error.message : String(error)
+    }`, { cause: error });
+  }
+}
+
 function isPerSessionImportError(err: unknown): boolean {
   // 'invalid byte sequence' is Postgres rejecting the DATA (e.g. a U+0000 a
   // sanitizer missed, #4392) — one bad session, never a DB-down signal.
@@ -195,6 +239,9 @@ export async function runTranscriptsIngest(
   let done = 0;
   let newWorkSessions = 0;
 
+  const mutate = await transcriptMutationPublisher(engine, opts);
+  const managed = mutate !== undefined;
+
   for (const path of opts.paths) {
     if (limitTruncated) break;
     const fileOutcome: IngestFileOutcome = {
@@ -225,15 +272,18 @@ export async function runTranscriptsIngest(
 
     // gbrain#4149: thread the explicit cap override; omit the opts object
     // entirely when unset so adapters keep their native defaults.
-    const gen = opts.maxBytes != null
-      ? detected.adapter.parse(path, { maxBytes: opts.maxBytes })
+    const gen = opts.maxBytes != null || opts.sessionSources !== undefined
+      ? detected.adapter.parse(path, {
+          ...(opts.maxBytes != null ? { maxBytes: opts.maxBytes } : {}),
+          ...(opts.sessionSources !== undefined ? { sessionSources: opts.sessionSources } : {}),
+        })
       : detected.adapter.parse(path);
+    let initiatingError: unknown;
     try {
       let step = await gen.next();
       while (!step.done) {
         if (limitTruncated) {
-          // Stop consuming; the generator's finally blocks clean up.
-          await gen.return?.(undefined as never);
+          // The unconditional close below runs the generator's finally.
           break;
         }
         const session = step.value;
@@ -254,7 +304,6 @@ export async function runTranscriptsIngest(
         if (opts.limit !== undefined && newWorkSessions >= opts.limit) {
           limitTruncated = true;
           result.cleanScan = false;
-          await gen.return?.(undefined as never);
           break;
         }
 
@@ -300,36 +349,49 @@ export async function runTranscriptsIngest(
             // path would import.
             newWorkSessions++;
           } else {
-            // The RESOLVED base slug: identity dedup can resolve part 1 to an
-            // EXISTING page under a different slug (same session id, changed
-            // title or corrected start date) — raw-data writes and stale-part
-            // reconciliation must follow the page that actually exists, or
-            // every re-run aborts on a nonexistent slug.
-            await adoptExistingBaseSlug(engine, opts.sourceId ?? 'default', rendered);
-            outcome.baseSlug = rendered.baseSlug;
-            let resolvedBaseSlug = rendered.baseSlug;
+            // Resolve native identities BEFORE importing. The general importer
+            // intentionally skips cross-slug external-ID duplicates, even when
+            // their bodies changed; asking it to discover our canonical slug
+            // would therefore silently keep stale transcript text.
+            const { partSlugs, resolvedBaseSlug } = await resolveTranscriptIdentity(engine, opts.sourceId,
+              redacted.session.meta.harness, redacted.session.meta.sessionId, rendered);
+            outcome.baseSlug = resolvedBaseSlug;
             for (const part of rendered.parts) {
+              const partSlug = partSlugs.get(part.part) ??
+                (part.part === 1 ? resolvedBaseSlug : `${resolvedBaseSlug}-p${part.part}`);
               try {
-                await preserveForeignFrontmatter(engine, opts.sourceId ?? 'default', part);
-                const r = await importFromContent(engine, part.slug, part.content, {
-                  noEmbed: !opts.embed,
-                  sourceId: opts.sourceId,
-                  activePack: opts.activePack,
+                part.slug = partSlug;
+                if (!managed) await preserveForeignFrontmatter(engine, opts.sourceId, part);
+                const provenance = {
                   source_kind: `transcript:${session.meta.harness}`,
                   source_uri: path,
                   ingested_via: 'cli:transcripts-ingest',
+                };
+                const receipt = managed ? await mutate!('put_page', partSlug, {
+                  content: part.content, ...provenance,
+                }, part) : undefined;
+                const r = receipt ? {
+                  slug: String(receipt.slug),
+                  status: receipt.status === 'skipped' ? 'skipped' as const : 'imported' as const,
+                } : await importFromContent(engine, partSlug, part.content, {
+                  noEmbed: !opts.embed,
+                  sourceId: opts.sourceId,
+                  activePack: opts.activePack,
+                  ...provenance,
                 });
                 outcome.statuses.push(r.status);
                 if (r.status === 'imported') result.pages.imported++;
                 else if (r.status === 'skipped') result.pages.skipped++;
                 else result.pages.errored++;
-                const actualSlug = r.slug || part.slug;
-                if (part.part === 1 && actualSlug) resolvedBaseSlug = actualSlug;
+                const actualSlug = r.slug || partSlug;
+                if (actualSlug !== partSlug) {
+                  throw new Error('canonical transcript identity changed during import');
+                }
                 result.slugsTouched.push(actualSlug);
               } catch (err) {
                 if (isPerSessionImportError(err)) throw err; // → per-session catch
                 const e = new Error(
-                  `${RUN_ABORT_MARKER}: import integrity failure on ${part.slug}: ${
+                  `${RUN_ABORT_MARKER}: import integrity failure on ${partSlug}: ${
                     err instanceof Error ? err.message : String(err)
                   }`,
                 );
@@ -358,50 +420,7 @@ export async function runTranscriptsIngest(
             // write is HEALED, not assumed: a prior run can have committed
             // the pages and then died before putRawData, and hash-skips
             // would otherwise make that hole permanent.
-            if (redacted.session.meta.raw) {
-              try {
-                const rawSource = `transcript:${session.meta.harness}`;
-                // Skipped re-runs COMPARE, never assume: existence alone is
-                // not freshness — a private pattern added AFTER the first
-                // import must refresh the stored copy, and a prior run can
-                // have died before this write. Content-equal rows skip the
-                // write so healthy re-runs stay write-free.
-                let needsRaw = true;
-                if (allSkipped) {
-                  // Active rows only: `allSkipped` means the import hash check
-                  // (which reads ACTIVE rows) just matched every page, so the
-                  // base page is alive here by construction — a tombstoned
-                  // page never reaches this branch (it reads as missing and is
-                  // re-imported, see the "resurrects the page" e2e). No
-                  // includeDeleted flag: the probe must never read through a
-                  // soft-delete the hash check did not.
-                  const existing = await engine.getRawData(resolvedBaseSlug, rawSource, {
-                    sourceId: opts.sourceId,
-                  });
-                  // Key-order-insensitive compare: JSONB hands keys back in
-                  // its own canonical order, so a plain JSON.stringify never
-                  // matched the freshly built object and every healthy re-run
-                  // rewrote the row.
-                  needsRaw =
-                    existing.length === 0 ||
-                    canonicalJson(existing[0].data) !==
-                      canonicalJson(JSON.parse(JSON.stringify(redacted.session.meta.raw)));
-                }
-                if (needsRaw) {
-                  await engine.putRawData(resolvedBaseSlug, rawSource, redacted.session.meta.raw, {
-                    sourceId: opts.sourceId,
-                  });
-                }
-              } catch (err) {
-                const e = new Error(
-                  `${RUN_ABORT_MARKER}: putRawData failed for ${resolvedBaseSlug}: ${
-                    err instanceof Error ? err.message : String(err)
-                  }`,
-                );
-                (e as { cause?: unknown }).cause = err;
-                throw e;
-              }
-            }
+            await healTranscriptRawData(engine, opts.sourceId, resolvedBaseSlug, session.meta.harness, redacted.session.meta.raw, allSkipped);
 
             // Stale-part reconciliation: a session that shrank or re-split
             // leaves higher-numbered part pages behind — delete them, or a
@@ -410,17 +429,14 @@ export async function runTranscriptsIngest(
             // holes that a first-miss or bounded-miss probe walks past) and
             // run on EVERY pass including all-skipped re-runs, because a
             // prior run can have died between the page writes and this step.
-            const partRows = await engine.executeRaw<{ slug: string }>(
-              `SELECT slug FROM pages
-               WHERE source_id = $1 AND deleted_at IS NULL AND slug LIKE $2`,
-              [opts.sourceId, `${resolvedBaseSlug}-p%`],
+            const partRows = await readTranscriptParts(
+              engine, opts.sourceId, redacted.session.meta.harness, redacted.session.meta.sessionId,
             );
             for (const row of partRows) {
-              const suffix = row.slug.slice(resolvedBaseSlug.length);
-              const m = /^-p(\d+)$/.exec(suffix);
-              const num = m ? Number(m[1]) : NaN;
-              if (Number.isFinite(num) && num > rendered.parts.length) {
-                await engine.deletePage(row.slug, { sourceId: opts.sourceId });
+              const num = Number(row.part);
+              if (Number.isInteger(num) && num > rendered.parts.length) {
+                if (managed) await mutate!('delete_page', row.slug);
+                else await engine.deletePage(row.slug, { sourceId: opts.sourceId });
                 result.partsDeleted++;
               }
             }
@@ -439,10 +455,27 @@ export async function runTranscriptsIngest(
       }
       if (step.done && step.value) applyFileDiagnostics(step.value, fileOutcome, result);
     } catch (err) {
+      initiatingError = err;
       if (err instanceof Error && err.message.startsWith(RUN_ABORT_MARKER)) throw err;
       fileOutcome.error = err instanceof Error ? err.message : String(err);
       result.erroredFiles++;
       result.cleanScan = false;
+    } finally {
+      // Manual next() consumption does not provide for-await's IteratorClose.
+      // Release native resources after success, cancellation AND downstream
+      // engine errors, including run-level aborts which rethrow above.
+      try {
+        await gen.return?.(undefined as never);
+      } catch (cleanupError) {
+        const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        if (initiatingError !== undefined) {
+          const originalMessage = initiatingError instanceof Error ? initiatingError.message : String(initiatingError);
+          throw new AggregateError([initiatingError, cleanupError],
+            `${RUN_ABORT_MARKER}: ${originalMessage}; adapter cleanup also failed: ${cleanupMessage}`,
+            { cause: initiatingError });
+        }
+        throw new Error(`${RUN_ABORT_MARKER}: adapter cleanup failed: ${cleanupMessage}`, { cause: cleanupError });
+      }
     }
 
     done++;
@@ -466,15 +499,17 @@ export async function runTranscriptsIngest(
  * say) are carried onto the re-rendered part. Gate- and phase-owned markers
  * are re-derived from the new content, so they are never carried.
  */
-async function preserveForeignFrontmatter(engine: BrainEngine, sourceId: string, part: RenderedPart): Promise<void> {
-  const existing = await engine.getPage(part.slug, { sourceId });
+async function preserveForeignFrontmatter(engine: BrainEngine, sourceId: string, part: RenderedPart, snapshotPage?: Page | null): Promise<void> {
+  const existing = snapshotPage === undefined ? await engine.getPage(part.slug, { sourceId }) : snapshotPage;
   const foreign = Object.entries(existing?.frontmatter ?? {})
     .filter(([key]) => !Object.hasOwn(part.frontmatter, key) && !RE_DERIVED_KEYS.has(key));
   if (foreign.length === 0) return;
   part.content = renderPartContent({ ...part.frontmatter, ...Object.fromEntries(foreign) }, part.body);
 }
 
-const RE_DERIVED_KEYS = new Set([...RECONCILE_SAFETY_KEYS, ATOMS_SCAN_HASH_KEY]);
+// Automatic refresh cannot release a trusted owner's quarantine. Preserve
+// that hold from the guarded snapshot; clearing requires an explicit owner write.
+const RE_DERIVED_KEYS = new Set([...RECONCILE_SAFETY_KEYS.filter(key => key !== QUARANTINE_KEY), ATOMS_SCAN_HASH_KEY]);
 
 async function adoptExistingBaseSlug(engine: BrainEngine, sourceId: string, rendered: RenderSessionResult): Promise<void> {
   const [existing] = await engine.executeRaw<{ slug: string }>(
@@ -523,4 +558,254 @@ function applyFileDiagnostics(diag: FileDiagnostics, fileOutcome: IngestFileOutc
     result.truncatedFiles++;
     result.cleanScan = false;
   }
+}
+/** Native publication is one cohesive admission/replay lane, not a second importer. */
+async function transcriptMutationPublisher(engine: BrainEngine, opts: TranscriptsIngestOpts) {
+  // Managed brains publish through the same native coordinator as put/delete.
+  // A committed receipt includes canonical-file publication and text projection;
+  // pending/failed receipts must abort before metadata, embedding or checkpoints.
+  const managed = !opts.dryRun && (await engine.executeRaw<{ enabled: boolean }>(
+    'SELECT enabled FROM persistence_brain WHERE singleton=1',
+  ))[0]?.enabled === true;
+  if (!managed) return undefined;
+  const caller = currentSubmissionAuthority();
+  if (caller && caller.kind !== 'application' || currentVerifiedLocalWriter()?.remote) {
+    throw new OperationError('permission_denied', 'Managed transcript import requires the trusted local CLI.', 'Run transcripts ingest on the brain host through its trusted local CLI; remote clients cannot import owner-private archives.');
+  }
+  const context: OperationContext = {
+    engine, remote: false, dryRun: false, sourceId: opts.sourceId,
+    config: loadConfig() ?? { engine: engine.kind },
+    logger: console,
+  };
+  return async (operation: 'put_page' | 'delete_page', slug: string, params: Record<string, unknown> = {}, part?: RenderedPart) => {
+    const [source] = await engine.executeRaw<{ incarnation: string; archived: boolean }>(
+      'SELECT incarnation,archived FROM sources WHERE id=$1', [opts.sourceId]);
+    if (!source || source.archived) throw new OperationError('source_changed', 'The write source is not active.', 'Inspect gbrain sources list and select an active registered source before importing.');
+    const snapshot = await engine.readPageSnapshot(slug, { sourceId: opts.sourceId, includeDeleted: true });
+    if (part) {
+      await preserveForeignFrontmatter(engine, opts.sourceId, part, snapshot?.page ?? null);
+      params = { ...params, content: part.content };
+    }
+    let intent: Record<string, unknown> = {
+      ...params, slug, source_id: opts.sourceId,
+      ...(snapshot ? { expected_revision: snapshot.revision } : {}),
+    };
+    const binding = await getWorktreeBinding(engine, opts.sourceId);
+    const writeThrough = !/^(false|0|off|no)$/i.test(await engine.getConfig('sync.write_through') ?? 'true');
+    let target: string | undefined;
+    if (operation === 'put_page') {
+      if (!writeThrough || !binding || binding.state !== 'active' || binding.owner_host_id !== localHostId() || !binding.local_path) {
+        throw new OperationError('owner_unavailable', 'Managed transcript import requires its active canonical file owner.',
+          'Run gbrain sources writer status --json and import on the active canonical owner with write-through enabled. Database-only transcript publication is not supported.');
+      }
+      const root = join(binding.local_path, binding.relative_path);
+      const mode = snapshot?.page.source_path ? await scannerSlugRootMode(engine, opts.sourceId, root) : undefined;
+      const recorded = recordedPathFromFileUri(snapshot?.page.source_uri, root);
+      target = resolveSourceLocalFilePath(root, snapshot?.page.source_path, slug, mode)
+        ?? (recorded ? join(root, recorded) : join(root, `${slug}.md`));
+      intent = { ...intent, ...managedTranscriptIntent(slug, String(params.content), snapshot, binding, target, !opts.embed, opts.activePack) };
+    }
+    // A hard purge returns to an absent snapshot, not the first-create
+    // generation. Native committed target history survives page deletion and
+    // receipt compaction; pending requests do not advance this absence anchor.
+    const absence = snapshot ? undefined : (await engine.executeRaw<{ id: string }>(
+      `SELECT id FROM persistence_requests WHERE source_id=$1 AND source_incarnation=$2::uuid
+       AND slug=$3 AND state='committed' ORDER BY sequence DESC LIMIT 1`,
+      [opts.sourceId, source.incarnation, slug]))[0]?.id ?? null;
+    // Repeated full scans reuse native receipts, even after journal compaction.
+    // A changed source/page incarnation, observed revision or exact intent is
+    // new work; generated timestamps never enter this identity.
+    const identity = { namespace: 'transcripts-ingest:v1', operation, sourceIncarnation: source.incarnation,
+      pageId: snapshot?.page.id ?? null, absence, intent,
+      writeThrough, worktreeId: binding?.worktree_id ?? null, topologyGeneration: binding?.topology_generation ?? null };
+    const requestIdFor = (value: unknown) => {
+      const hash = digest(value);
+      return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
+    };
+    let requestId = requestIdFor(identity);
+    await initializeLocalPersistence(context);
+    const principal = await requestPrincipalForContext(context);
+    let prior = await getWriteRequest(engine, principal, requestId);
+    let selectedIntent: Record<string, unknown> = intent;
+    const unchanged = async () => operation === 'put_page' && binding && snapshot &&
+      await unchangedManagedImport(context, binding, { ...intent, targetHash: existsSync(target!)
+        ? sha256(readImportBytes(target!)) : null } as ManagedImportIntent, snapshot);
+    if (!prior && await unchanged()) return { slug, status: 'skipped', chunks: 0 };
+    const failures: Array<{ row: NonNullable<typeof prior>; callerIntent: Record<string, unknown> }> = [];
+    // Follow retained accepted retries before touching a possibly published
+    // artifact. Compacted parents retain digests, while the active child keeps
+    // the original frozen target hash needed to verify those parent intents.
+    let acceptedTarget: unknown;
+    let hasAcceptedTarget = false;
+    while (prior) {
+      if (prior.intent && Object.hasOwn(prior.intent, 'targetHash')) {
+        acceptedTarget = prior.intent.targetHash;
+        hasAcceptedTarget = true;
+      }
+      // Receipt compaction removes its frozen file preimage. A subsequent
+      // format-only canonical rewrite may therefore need a new, deterministic
+      // continuation, but only after the native owner proves current semantic
+      // equality at the exact committed revision. Pending ownership is unchanged.
+      if (operation === 'put_page' && prior.compacted && prior.state === 'committed' && !prior.recovery &&
+        snapshot && prior.outcome?.revision === snapshot.revision && !hasAcceptedTarget) {
+        const successorId = requestIdFor({ ...identity, settledAfter: prior.request_id });
+        const successor = await getWriteRequest(engine, principal, successorId);
+        if (!successor && await unchanged()) return { slug, status: 'skipped', chunks: 0 };
+        const targetHash = successor?.intent && Object.hasOwn(successor.intent, 'targetHash')
+          ? successor.intent.targetHash : successor ? undefined : existsSync(target!) ? sha256(readImportBytes(target!)) : null;
+        const callerIntent = { ...selectedIntent, targetHash };
+        if (successor || prior.digest !== intentDigest({ operation, sourceId: opts.sourceId, slug, callerIntent })) {
+          await authorizeStoredRequest(engine, prior);
+          for (const failure of failures) assertReplayIntent(failure.row,
+            intentDigest({ operation, sourceId: opts.sourceId, slug, callerIntent: { ...failure.callerIntent, targetHash } }));
+          if (!successor) {
+            const file = await prepareFileTarget(engine, { source_id: opts.sourceId, worktree_id: binding!.worktree_id, slug },
+              snapshot, String(selectedIntent.content));
+            if (!file) throw new OperationError('source_changed', 'Transcript import requires its writable canonical file owner.',
+              'Select a writable canonical archive source; the existing page and mirror remain unchanged.');
+          }
+          requestId = successorId;
+          selectedIntent = intent;
+          failures.length = 0;
+          prior = successor;
+          continue;
+        }
+      }
+      if (!isTerminal(prior) || prior.state === 'committed' || prior.recovery) break;
+      await authorizeStoredRequest(engine, prior);
+      failures.push({ row: prior, callerIntent: selectedIntent });
+      const retryId = requestIdFor({ ...identity, retryOf: prior.request_id });
+      const acceptedRetry = await getWriteRequest(engine, principal, retryId);
+      if (!acceptedRetry && await unchanged()) return { slug, status: 'skipped', chunks: 0 };
+      if (!acceptedRetry && !opts.retryFailed) break;
+      selectedIntent = { ...intent, retry_of: prior.request_id };
+      requestId = retryId;
+      prior = acceptedRetry;
+    }
+    if (operation === 'put_page') {
+      const targetHash = hasAcceptedTarget ? acceptedTarget : existsSync(target!) ? sha256(readImportBytes(target!)) : null;
+      selectedIntent = { ...selectedIntent, targetHash };
+      for (const failure of failures) failure.callerIntent = { ...failure.callerIntent, targetHash };
+    }
+    for (const failure of failures) {
+      assertReplayIntent(failure.row, intentDigest({ operation, sourceId: opts.sourceId, slug, callerIntent: failure.callerIntent }));
+    }
+    // Settled scans retain stock canonical-file checks. A pending recovery
+    // owns its partial artifact: its accepted target hash is immutable, whereas
+    // current file bytes may already be the replacement and DB still old.
+    if ((!prior || isTerminal(prior) && !prior.recovery) && writeThrough && binding) {
+      const file = await prepareFileTarget(engine, { source_id: opts.sourceId, worktree_id: binding.worktree_id, slug },
+        snapshot, operation === 'put_page' ? String(selectedIntent.content) : null);
+      if (operation === 'put_page' && !file) throw new OperationError('source_changed', 'Transcript import cannot replace a database-only or read-only mirror page.',
+        'Select a writable canonical archive source; the existing page and mirror remain unchanged.');
+    }
+    try {
+      return await submitPageMutation(context, { operation, ...(operation === 'put_page' ? { managedFileImport: true as const } : {}), waitMs: 30_000, params: { ...selectedIntent, request_id: requestId } });
+    } catch (error) {
+      if (error instanceof OperationError && error.writeRequest && ['failed', 'conflict', 'cancelled'].includes(error.writeRequest.state)) {
+        error.message += ` Inspect native request ${error.writeRequest.request_id}; after repairing its cause, rerun transcripts ingest with --retry-failed to authorize one new attempt.`;
+      }
+      throw error;
+    }
+  };
+}
+
+async function resolveTranscriptIdentity(engine: BrainEngine, sourceId: string, harness: TranscriptFormat, sessionId: string, rendered: RenderSessionResult) {
+  const existingParts = await readTranscriptParts(
+    engine, sourceId, harness, sessionId,
+  );
+  // Retain upstream's external-ID adoption for legacy pages without
+  // transcript_import metadata; native identities remain authoritative.
+  if (existingParts.length === 0) await adoptExistingBaseSlug(engine, sourceId, rendered);
+  const partSlugs = new Map<number, string>();
+  for (const row of existingParts) {
+    const number = Number(row.part);
+    if (!Number.isInteger(number) || number < 1 || partSlugs.has(number)) {
+      throw new Error(`${RUN_ABORT_MARKER}: ambiguous canonical transcript part identity`);
+    }
+    partSlugs.set(number, row.slug);
+  }
+  let resolvedBaseSlug = rendered.baseSlug;
+  if (partSlugs.has(1)) resolvedBaseSlug = partSlugs.get(1)!;
+  else if (partSlugs.size) {
+    // A crash/deletion may leave later parts but no base. Their
+    // native suffix preserves the original base for resurrection.
+    const [number, slug] = [...partSlugs.entries()].sort(([a], [b]) => a - b)[0];
+    const suffix = `-p${number}`;
+    if (!slug.endsWith(suffix)) throw new Error(`${RUN_ABORT_MARKER}: missing canonical transcript base identity`);
+    resolvedBaseSlug = slug.slice(0, -suffix.length);
+  }
+  return { partSlugs, resolvedBaseSlug };
+}
+
+/** Heal interrupted metadata writes even when every canonical part hash-skips. */
+async function healTranscriptRawData(engine: BrainEngine, sourceId: string, resolvedBaseSlug: string, harness: TranscriptFormat, raw: Record<string, unknown> | undefined, allSkipped: boolean) {
+  if (raw) {
+    try {
+      const rawSource = `transcript:${harness}`;
+      // Skipped re-runs COMPARE, never assume: existence alone is
+      // not freshness — a private pattern added AFTER the first
+      // import must refresh the stored copy, and a prior run can
+      // have died before this write. Content-equal rows skip the
+      // write so healthy re-runs stay write-free.
+      let needsRaw = true;
+      if (allSkipped) {
+        // Active rows only: `allSkipped` means the import hash check
+        // (which reads ACTIVE rows) just matched every page, so the
+        // base page is alive here by construction — a tombstoned
+        // page never reaches this branch (it reads as missing and is
+        // re-imported, see the "resurrects the page" e2e). No
+        // includeDeleted flag: the probe must never read through a
+        // soft-delete the hash check did not.
+        const existing = await engine.getRawData(resolvedBaseSlug, rawSource, {
+          sourceId,
+        });
+        // Key-order-insensitive compare: JSONB hands keys back in
+        // its own canonical order, so a plain JSON.stringify never
+        // matched the freshly built object and every healthy re-run
+        // rewrote the row.
+        needsRaw =
+          existing.length === 0 ||
+          canonicalJson(existing[0].data) !==
+            canonicalJson(JSON.parse(JSON.stringify(raw)));
+      }
+      if (needsRaw) {
+        await engine.putRawData(resolvedBaseSlug, rawSource, raw, {
+          sourceId,
+        });
+      }
+    } catch (err) {
+      const e = new Error(
+        `${RUN_ABORT_MARKER}: putRawData failed for ${resolvedBaseSlug}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      (e as { cause?: unknown }).cause = err;
+      throw e;
+    }
+  }
+}
+
+/** Stock native managed import owns noEmbed, immutable input and target checks. */
+function managedTranscriptIntent(slug: string, content: string, snapshot: PageSnapshot | null,
+  binding: NonNullable<Awaited<ReturnType<typeof getWorktreeBinding>>>, target: string,
+  noEmbed: boolean, activePack?: IngestActivePack) {
+  const root = join(binding.local_path!, binding.relative_path);
+  const path = relative(root, target);
+  const sourcePath = snapshot?.page.source_path ?? path;
+  const normalized = managedImportContent(sourcePath, Buffer.from(content), activePack);
+  if (normalized.slug !== slug) throw new OperationError('source_changed', 'The transcript canonical path no longer names its session slug.',
+    'Inspect the existing page and canonical path before importing; neither identity is replaced by a different slug.');
+  const inputHash = sha256(content);
+  const home = ensureGbrainHome();
+  const stagingRoot = join(home, 'cache', 'transcript-import');
+  mkdirPrivate(stagingRoot, home);
+  const inputPath = join(realpathSync(stagingRoot), `${inputHash}.md`);
+  // Immutable private preparation survives pending native recovery and replay.
+  // A crash cannot create a partial artifact under the accepted hash name.
+  if (!existsSync(inputPath)) atomicWriteFileSync(inputPath, content, { mode: 0o600, durable: true });
+  if (sha256(readImportBytes(inputPath)) !== inputHash) throw new OperationError('source_changed', 'Prepared transcript input does not match its immutable hash.',
+    'Inspect the private transcript-import cache and repair the changed artifact before retrying; no canonical page was changed.');
+  return { kind: 'managed_file_import', content: normalized.content, sourcePath, path, inputPath, inputHash,
+    ownerEpoch: String(binding.owner_epoch), noEmbed, ...(activePack ? { activePack } : {}) };
 }

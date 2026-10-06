@@ -36,7 +36,12 @@ async function run(truncated: boolean) {
   scratch.push(dir);
   const f = join(dir, 'rollout.jsonl');
   writeFileSync(f, '{"x":1}\n');
-  return runTranscriptsIngest({} as never, {
+  return runTranscriptsIngest({
+    executeRaw: async (sql: string) => {
+      expect(sql).toBe('SELECT enabled FROM persistence_brain WHERE singleton=1');
+      return [{ enabled: false }];
+    },
+  } as never, {
     paths: [f],
     sourceId: 'default',
     adapters: [stubAdapter(truncated)],

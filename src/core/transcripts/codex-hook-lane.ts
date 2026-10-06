@@ -38,7 +38,7 @@ import { isPathContained } from '../path-confine.ts';
 import type { ConfineTranscriptResult, ParsedTranscript, ToolCallRecord } from './claude-code-jsonl.ts';
 import { capToolCallInput, TRANSCRIPT_HARD_CAP_BYTES, TRANSCRIPT_MAX_BYTES_DEFAULT } from './claude-code-jsonl.ts';
 import type { WindowTurn } from '../context/entity-salience.ts';
-import { isRepeatedCodexUserTurn, mapCodexLine } from './codex.ts';
+import { acceptCodexAssistantMessage, isRepeatedCodexUserTurn, mapCodexLine } from './codex.ts';
 
 /** Head window kept on over-budget reads: session_meta is byte 0 of a rollout
  * and carries the identity a pure tail read would lose (codex.ts rationale). */
@@ -110,8 +110,8 @@ export interface ParsedCodexTranscript extends ParsedTranscript {
  * Parse a codex rollout for the hook lane. Under budget: whole-file read.
  * Over budget: HEAD + TAIL (head keeps session_meta identity, tail keeps the
  * newest turns; both torn join lines land in skippedLines — codex.ts's
- * documented accounting). Throws only on filesystem errors — callers confine
- * first and fail open.
+ * documented accounting). Throws on filesystem errors or contradictory native
+ * assistant identities — callers confine first and fail open.
  */
 export function parseCodexHookTranscript(
   path: string,
@@ -145,6 +145,7 @@ export function parseCodexHookTranscript(
   }
 
   const turns: WindowTurn[] = [];
+  const assistantIds = new Map<string, string>();
   const genuineUserTurnIndexes: number[] = [];
   const toolCalls: ToolCallRecord[] = [];
   const toolCallTurnIndexes: number[] = [];
@@ -179,6 +180,7 @@ export function parseCodexHookTranscript(
         turns.push({ role: mapped.message.role, text: mapped.message.text });
         break;
       case 'assistant':
+        if (!acceptCodexAssistantMessage(mapped, assistantIds)) break;
         turns.push({ role: mapped.message.role, text: mapped.message.text });
         break;
       case 'tool_call':

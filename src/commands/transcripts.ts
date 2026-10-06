@@ -3,7 +3,7 @@
  * cathedral-4 import lane.
  *
  *   gbrain transcripts recent   — dream-corpus .txt reader (v0.29 surface).
- *   gbrain transcripts ingest   — import dead session logs (Claude Code,
+ *   gbrain transcripts ingest   — import retained session logs (Claude Code,
  *                                 Codex, OpenClaw, Hermes, Grok) and consumer
  *                                 chat exports (ChatGPT, Claude.ai) into
  *                                 conversation pages. Local-only, explicit
@@ -74,11 +74,14 @@ interface IngestCliOpts {
   limit?: number;
   since?: string;
   source?: string;
+  /** Exact origins in a native multi-session store, NOT brain source ids. */
+  sessionSources?: string[];
   facts?: boolean;
   maxCostUsd?: number;
   /** gbrain#4149: explicit per-format byte-cap override; undefined = adapter-native defaults. */
   maxBytes?: number;
   embed?: boolean;
+  retryFailed?: boolean;
   all?: boolean;
   json?: boolean;
   quiet?: boolean;
@@ -97,6 +100,7 @@ export function ingestCheckpointFingerprintInput(args: {
   format: string;
   version: string | number;
   maxBytes?: number;
+  sessionSources?: string[];
 }): Record<string, string | number | string[]> {
   return {
     sourceId: args.sourceId,
@@ -109,6 +113,9 @@ export function ingestCheckpointFingerprintInput(args: {
     // rescan. Omitting the key keeps the default path on the legacy
     // fingerprint; every explicit cap still gets its own scope.
     ...(args.maxBytes != null ? { maxBytes: args.maxBytes } : {}),
+    // An explicit origin selection changes coverage. Keep omitted selections
+    // on the old fingerprint, and treat order/duplicates as the same scope.
+    ...(args.sessionSources !== undefined ? { sessionSources: [...new Set(args.sessionSources)].sort() } : {}),
   };
 }
 
@@ -121,6 +128,7 @@ export function parseIngestArgs(args: string[]): IngestCliOpts | { help: true } 
     if (a === '--quiet') { opts.quiet = true; continue; }
     if (a === '--dry-run') { opts.dryRun = true; continue; }
     if (a === '--embed') { opts.embed = true; continue; }
+    if (a === '--retry-failed') { opts.retryFailed = true; continue; }
     if (a === '--facts') { opts.facts = true; continue; }
     if (a === '--all') { opts.all = true; continue; }
     if (a === '--include-self') { opts.includeSelf = true; continue; }
@@ -162,6 +170,12 @@ export function parseIngestArgs(args: string[]): IngestCliOpts | { help: true } 
       opts.source = v;
       continue;
     }
+    if (a === '--session-source') {
+      const v = args[++i];
+      if (!v?.trim() || v.startsWith('-')) return { error: 'session-source needs a native origin value' };
+      (opts.sessionSources ??= []).push(v);
+      continue;
+    }
     if (a === '--max-cost-usd') {
       const n = parseFloat(args[++i] ?? '');
       if (!Number.isFinite(n) || n <= 0) return { error: 'max-cost-usd must be a positive number' };
@@ -196,10 +210,12 @@ const HELP = `Usage:
   gbrain transcripts recover codex       # restore user turns lost to #5163 (preview; --apply)
   gbrain transcripts recent [options]
 
-ingest — import dead session logs and chat exports as conversation pages
+ingest — import retained session logs and chat exports under the brain's existing access policy
 (readable text-turn archive: user/assistant text only, secrets redacted,
-long sessions split into searchable parts). Re-runs are free (content-hash
-skip). Embedding is OFF by default; run the embed backfill later or opt in.
+complete messages split into searchable parts). Live Claude Code/Codex logs use
+a captured file boundary; Hermes uses a consistent SQLite snapshot. Unchanged pages hash-skip.
+Existing visibility and explicit owner quarantine holds are preserved on refresh.
+Embedding is OFF by default; run the embed backfill later or opt in.
 
   --all             Import every session log discovered under the harness
                     roots (claude/codex/openclaw/grok projects + the hermes store)
@@ -209,21 +225,29 @@ skip). Embedding is OFF by default; run the embed backfill later or opt in.
   --format F        claude-code | codex | openclaw | hermes | grok |
                     chatgpt | claude-export (auto-detected when omitted)
   --dry-run         Parse + redact + report; writes nothing
-  --limit N         Max sessions this run
+  --limit N         Max new-work sessions (dry-run: max eligible sessions)
   --since T         Only sessions newer than ISO time T; the word "last"
-                    resumes from the previous clean run
+                    resumes from the previous clean run. Omit for full
+                    re-scans that revisit older appended/changed sessions
   --source-id S     Target source (default: the canonical 6-tier resolution)
-  --embed           Embed pages at import (default: defer to embed backfill)
+  --session-source O  Exact native session origin (Hermes), e.g. cli or slack;
+                    repeat to select several. NOT a brain source id.
+                    Omit to include all origins, including cron/generated sessions
+  --embed           Fill missing vectors on touched pages, including hash skips
+                    (default: defer to embed backfill)
+  --retry-failed    Explicitly retry frozen failed managed writes after repair
   --facts           Extract facts from imported pages (budget-capped)
   --max-cost-usd F  Facts budget cap (default 5)
-  --max-bytes N     Override the per-format file/store byte caps (e.g. 4gb
-                    for a multi-GB hermes store). Omit to keep each
-                    format's native safety default. Changing it starts a
+  --max-bytes N     Explicit per-format file/store byte budget (e.g. 4gb).
+                    Default Claude Code/Codex imports stream complete JSONL;
+                    Hermes reads its native indexed store without a whole-store cap.
+                    Other blob formats keep their native safety caps. Changing it starts a
                     fresh --since last scope (caps are part of the
                     checkpoint fingerprint). Adapters differ over budget:
                     codex degrades to a bounded head+tail read, while
                     claude-code, openclaw, hermes and grok reject the file
-                    outright — so LOWERING this can drop those formats
+                    outright. Incomplete/failed scans return a nonzero exit code;
+                    a clean dry-run preview alone is not a failure
   --json            Machine-readable result
   --quiet           Suppress the human summary
 
@@ -446,6 +470,7 @@ async function runIngest(engine: BrainEngine, args: string[]): Promise<void> {
   const paths = await expandPaths(parsed.paths);
   if (paths.length === 0) {
     console.error('gbrain transcripts ingest: 0 files matched');
+    setCliExitVerdict(1);
     return;
   }
 
@@ -468,6 +493,7 @@ async function runIngest(engine: BrainEngine, args: string[]): Promise<void> {
       format: parsed.format ?? 'auto',
       version: TRANSCRIPT_IMPORT_VERSION,
       maxBytes: parsed.maxBytes,
+      sessionSources: parsed.sessionSources,
     })),
   };
   let sinceIso = parsed.since;
@@ -500,7 +526,10 @@ async function runIngest(engine: BrainEngine, args: string[]): Promise<void> {
       sinceIso,
       sourceId,
       maxBytes: parsed.maxBytes,
-      embed: parsed.embed,
+      sessionSources: parsed.sessionSources,
+      // Close embedding over all touched pages below, including hash skips.
+      embed: false,
+      retryFailed: parsed.retryFailed,
       activePack,
       onFileDone: () => reporter.tick(),
       // Multi-session stores (one hermes state.db = thousands of sessions)
@@ -509,6 +538,31 @@ async function runIngest(engine: BrainEngine, args: string[]): Promise<void> {
     });
   } finally {
     reporter.finish();
+  }
+
+  let embeddings: { embedded: number; remainingChunks: number; status: 'complete' | 'incomplete' } | undefined;
+  if (parsed.embed && !parsed.dryRun) {
+    const { resolveActiveEmbeddingColumnFromEngine, quoteIdentifier } = await import('../core/search/embedding-column.ts');
+    const { embedStalePages } = await import('../core/embed-stale.ts');
+    const column = quoteIdentifier((await resolveActiveEmbeddingColumnFromEngine(engine)).name);
+    const missingSql = `SELECT p.slug, count(*)::int AS missing_chunks
+      FROM content_chunks cc JOIN pages p ON p.id = cc.page_id
+      WHERE p.source_id = $1 AND p.slug = ANY($2::text[]) AND p.deleted_at IS NULL
+        AND cc.${column} IS NULL GROUP BY p.slug ORDER BY p.slug`;
+    const params = [sourceId, [...new Set(result.slugsTouched)]];
+    const missing = await engine.executeRaw<{ slug: string; missing_chunks: number }>(missingSql, params);
+    const embedded = missing.length > 0
+      ? (await embedStalePages(engine, missing.map(row => row.slug), sourceId)).embedded
+      : 0;
+    // The native helper is fail-soft per page. Only persisted vectors attest
+    // success; provider errors must not advance the clean-scan watermark.
+    const remaining = await engine.executeRaw<{ slug: string; missing_chunks: number }>(missingSql, params);
+    const remainingChunks = remaining.reduce((sum, row) => sum + row.missing_chunks, 0);
+    embeddings = { embedded, remainingChunks, status: remainingChunks === 0 ? 'complete' : 'incomplete' };
+    if (remainingChunks > 0) {
+      result.cleanScan = false;
+      console.error(`transcripts ingest: ${remainingChunks} touched chunk(s) still lack active embeddings`);
+    }
   }
 
   if (!parsed.embed && !parsed.dryRun && result.pages.imported > 0 && !parsed.quiet) {
@@ -541,9 +595,12 @@ async function runIngest(engine: BrainEngine, args: string[]): Promise<void> {
   }
 
   if (parsed.json) {
-    console.log(JSON.stringify({ ...result, facts: factsSummary ?? null, source_id: sourceId }, null, 2));
+    console.log(JSON.stringify({ ...result, embeddings: embeddings ?? null, facts: factsSummary ?? null, source_id: sourceId }, null, 2));
   } else if (!parsed.quiet) {
     console.log(fmtSummary(result));
+    if (embeddings) {
+      console.log(`embeddings: ${embeddings.embedded} chunk(s) embedded, ${embeddings.remainingChunks} missing (${embeddings.status})`);
+    }
     if (factsSummary) {
       console.log(
         `facts: extracted over ${factsSummary.pages} page(s)` +
@@ -556,10 +613,18 @@ async function runIngest(engine: BrainEngine, args: string[]): Promise<void> {
     }
   }
 
-  const allFailed =
-    result.files.length > 0 &&
-    result.files.every((f) => f.error !== undefined || (f.drift && f.sessions.length === 0));
-  if (allFailed) setCliExitVerdict(1);
+  // A successful prefix is not a successful run. dryRun alone deliberately
+  // freezes cleanScan (nothing was written), but real parse/write failures
+  // must remain failures even during a preview.
+  const incomplete =
+    (!parsed.dryRun && !result.cleanScan) ||
+    result.erroredFiles > 0 || result.sessionsErrored > 0 || result.pages.errored > 0 ||
+    result.driftFiles > 0 || result.truncatedFiles > 0 ||
+    result.files.some((f) => f.skippedLines > 0) ||
+    // The limit gate encounters the next session but intentionally leaves it
+    // unprocessed. Unlike planned pages, that is incomplete preview coverage.
+    result.sessionsSeen > result.sessionsImported + result.sessionsFiltered + result.sessionsErrored;
+  if (incomplete) setCliExitVerdict(1);
 }
 
 async function runStatus(engine: BrainEngine, args: string[]): Promise<void> {
@@ -594,6 +659,11 @@ async function runStatus(engine: BrainEngine, args: string[]): Promise<void> {
 }
 
 export async function runTranscripts(engine: BrainEngine, args: string[]): Promise<void> {
+  // CLI help dispatch deliberately supplies no engine, including nested help.
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(HELP);
+    return;
+  }
   const sub = args[0];
   if (sub === 'ingest') {
     await runIngest(engine, args.slice(1));

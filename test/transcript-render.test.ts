@@ -92,7 +92,7 @@ describe('render round-trip through the SHARED imessage-slack pattern', () => {
     expect(fm.id).toMatch(/-p1$/);
     expect(fm.transcript_import.harness).toBe('codex');
     expect(fm.transcript_import.session_id).toBe('render-test-session-1');
-    expect(fm.transcript_import.version).toBe(1);
+    expect(fm.transcript_import.version).toBe(2);
     expect(fm.transcript_import.part).toBe(1);
     expect(fm.transcript_import.of).toBe(1);
     // Never the dream marker — that would suppress fact extraction.
@@ -275,7 +275,7 @@ describe('part splitting [embed-skip is the binding limit]', () => {
     const p2Body = splitBody(r.parts[1].content);
     const p1LastAnchor = p1Body.trimEnd().split('\n\n').at(-OVERLAP_MESSAGES)?.split('\n')[0];
     expect(p1LastAnchor).toBeTruthy();
-    expect(p2Body.startsWith(p1LastAnchor as string)).toBe(true);
+    expect(parseConversation(p2Body).messages.slice(0, OVERLAP_MESSAGES)).toEqual(parseConversation(p1Body).messages.slice(-OVERLAP_MESSAGES));
   });
 
   // #5427: PART_TARGET_BYTES must stay under the content-sanity WARN line.

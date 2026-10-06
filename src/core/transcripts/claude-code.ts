@@ -13,7 +13,7 @@ import type {
   ParseSessionsOpts,
   TranscriptAdapter,
 } from './types.ts';
-import { TRANSCRIPT_JSONL_HARD_CAP, utcTimestamp } from './types.ts';
+import { utcTimestamp } from './types.ts';
 import { parseClaudeSessionFile, SPEC_TARGET } from './claude-code-jsonl.ts';
 import { basename } from 'node:path';
 import { closeSync, openSync, readSync } from 'node:fs';
@@ -185,9 +185,7 @@ export const claudeCodeAdapter: TranscriptAdapter = {
     path: string,
     opts: ParseSessionsOpts = {},
   ): AsyncGenerator<ParsedSession, FileDiagnostics> {
-    const r = parseClaudeSessionFile(path, {
-      maxBytes: opts.maxBytes ?? TRANSCRIPT_JSONL_HARD_CAP,
-    });
+    const r = parseClaudeSessionFile(path, opts);
     const sessionId = r.sessionId || basename(path, '.jsonl');
     let sessions = 0;
     if (r.turns.length > 0) {

@@ -178,7 +178,10 @@ export async function prepareManagedImportMutation(engine: BrainEngine, row: Wri
     : code
     ? await importCodeFile(engine, p.sourcePath, p.content, { ...source, noEmbed: true, prepare })
     : await importFromContent(engine, row.slug, p.content, { ...source, noEmbed: true, remote: false, prepare,
-      activePack: p.activePack, sourcePath: p.sourcePath, filename: basename(p.sourcePath, '.md'), allowEmptyOverwrite: true });
+      activePack: p.activePack, sourcePath: p.sourcePath, filename: basename(p.sourcePath, '.md'), allowEmptyOverwrite: true,
+      source_kind: typeof p.source_kind === 'string' ? p.source_kind : null,
+      source_uri: typeof p.source_uri === 'string' ? p.source_uri : null,
+      ingested_via: typeof p.ingested_via === 'string' ? p.ingested_via : null });
   if (!prepared) throw opError('invalid_params', result.error ?? 'The file could not be prepared.',
     `${p.sourcePath} was rejected while preparing import request ${row.request_id} for source ${row.source_id}; nothing was published. Fix the file content or frontmatter named in the message, then import it again.`,
     { fix: reimportFix(p.inputPath, row.source_id) });
