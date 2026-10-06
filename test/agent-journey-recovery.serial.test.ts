@@ -47,6 +47,7 @@ import { operations } from '../src/core/operations.ts';
 import { shellQuote } from '../src/core/agent-output.ts';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { withCoordinatedWrite } from '../src/core/persistence/context.ts';
+import { fixtureDiagnostic } from './helpers/fixture-diagnostics.ts';
 import { TEST_WRITE_ATTRIBUTION } from './helpers/write-attribution.ts';
 import {
   REPO, body, call, expectOneBlockError, gb, journeyEnv, mcp, oneDocument, waitFor, type GbResult,
@@ -168,8 +169,14 @@ describe('H1b: read-only grant over HTTP', () => {
     const token = (minted.stdout.match(/gbrain_[a-f0-9]{64}/) ?? [''])[0];
     expect(token).toBeTruthy();
     http = spawn('bun', ['--no-env-file', 'run', join(REPO, 'src', 'cli.ts'), 'serve', '--http', '--bind', '127.0.0.1', '--port', String(PORT)],
-      { cwd: home, env: journeyEnv(home), stdio: ['ignore', 'ignore', 'ignore'] });
-    expect(await waitFor(async () => (await fetch(`http://127.0.0.1:${PORT}/health`).catch(() => null))?.ok === true, 60_000)).toBe(true);
+      { cwd: home, env: journeyEnv(home), stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    http.stderr?.on('data', chunk => { stderr += String(chunk); });
+    const diagnostic = () => fixtureDiagnostic('HTTP grant startup', `exit=${http!.exitCode} signal=${http!.signalCode}\n${stderr}`, [token]);
+    expect(await waitFor(async () => {
+      if (http!.exitCode !== null || http!.signalCode !== null) throw new Error(diagnostic());
+      return (await fetch(`http://127.0.0.1:${PORT}/health`).catch(() => null))?.ok === true;
+    }, 60_000), diagnostic()).toBe(true);
     const client = new Client({ name: 'ro-harness', version: '1' }, { capabilities: {} });
     await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${PORT}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
     try {
