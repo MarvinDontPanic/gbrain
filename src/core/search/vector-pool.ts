@@ -35,7 +35,11 @@ export async function searchVectorPool(
   const deadline = performance.now() + 8_000;
   const remaining = () => Math.max(0, Math.floor(deadline - performance.now()));
   let batch: VectorPoolBatch = { rows: [], candidatePool: 0 };
-  let innerLimit = initialLimit;
+  // Relaxed iteration may discover closer neighbors after a filled early
+  // window. Collect the existing bounded HNSW envelope before max-pooling,
+  // rather than certifying candidate quality from result-row count alone.
+  const collectIterativeEnvelope = indexed && iterative;
+  let innerLimit = collectIterativeEnvelope ? Math.max(initialLimit, 20_000) : initialLimit;
   let escalations = 0;
   let exactFallback = false;
   let reason: 'candidate_budget' | 'iterative_scan_unavailable' | 'deadline' =
@@ -43,14 +47,14 @@ export async function searchVectorPool(
   try {
     for (;;) {
       if (remaining() === 0) { reason = 'deadline'; break; }
-      batch = await run({ innerLimit, maxScanTuples: Math.min(2_000 * 4 ** escalations, 20_000), remainingMs: remaining(), exact: false });
+      batch = await run({ innerLimit, maxScanTuples: collectIterativeEnvelope ? 20_000 : Math.min(2_000 * 4 ** escalations, 20_000), remainingMs: remaining(), exact: false });
       if (batch.rows.length >= limit) return batch.rows;
       if (batch.candidatePool < innerLimit) {
         if (!indexed) return batch.rows;
         if (remaining() === 0) { reason = 'deadline'; break; }
         if (!(await hasMore(batch.eligiblePool ?? batch.candidatePool, remaining()))) return batch.rows;
       }
-      if (escalations >= 3 || (indexed && !iterative)) break;
+      if (collectIterativeEnvelope || escalations >= 3 || (indexed && !iterative)) break;
       innerLimit = Math.min(innerLimit * 4, Math.max(initialLimit, 20_000));
       escalations++;
     }
