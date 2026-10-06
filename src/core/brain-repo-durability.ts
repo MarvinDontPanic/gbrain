@@ -43,6 +43,8 @@ import { redactSecretsInText } from './minions/handlers/shell-redact.ts';
 import { ensureGbrainHome, resolveGbrainHome } from './gbrain-home.ts';
 import { binaryOnPath } from './execution-env.ts';
 import { loadFilingRules, type FilingRulesDoc } from './filing-audit.ts';
+import { opError } from './ops/contract.ts';
+import { readFix } from './ops/op-fix.ts';
 // Bundled into the --compile binary as the fallback taxonomy for repos that
 // don't ship their own — see resolveFilingRules().
 import filingRulesDoc from '../../skills/_brain-filing-rules.json';
@@ -563,9 +565,10 @@ export function execFileBounded(file: string, args: string[], options: BoundedEx
   });
 }
 
-/** A git probe that does not block the event loop; a failed probe reads as ''. */
+/** A missing config key reads as ''; a failed Git probe is not disabled durability. */
 async function gitOutput(repoPath: string, args: string[]): Promise<string> {
   const { error, stdout } = await execFileBounded('git', ['-C', repoPath, ...args], { timeout: 10_000, env: { ...process.env, ...GIT_ENV } });
+  if (error && !(error.code === 1 && args[0] === 'config' && args[1] === '--get')) throw error;
   return error ? '' : stdout.trim();
 }
 
@@ -582,9 +585,19 @@ export async function isDurabilityHardenedAsync(repoPath: string): Promise<boole
     const dir = !reported ? join(repoPath, '.git', 'hooks') : isAbsolute(reported) ? reported : join(repoPath, reported);
     // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- fixed hook filename inside the git-reported hooks directory, as in isDurabilityHardened
     const hookPath = join(dir, 'post-commit');
-    return existsSync(hookPath) && readFileSync(hookPath, 'utf-8').includes(HOOK_BANNER);
-  } catch {
-    return false;
+    try {
+      return readFileSync(hookPath, 'utf-8').includes(HOOK_BANNER);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return false;
+      throw error;
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    const failureCode = typeof code === 'number' || typeof code === 'string' && /^E[A-Z]+$/.test(code) ? ` (${code})` : '';
+    throw opError('git_unavailable', 'Cannot determine whether native Git durability is enabled.',
+      `A Git configuration probe or hook read failed${failureCode}. This does not establish that durability is disabled; its Git effect must remain unfinished. Inspect the registered checkout and its native writer status before continuing.`,
+      { fix: readFix('Reports the registered canonical owner and its Git effects, read-only.',
+        { argv: ['gbrain', 'sources', 'writer', 'status', '--json'] }) });
   }
 }
 

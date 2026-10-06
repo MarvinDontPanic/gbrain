@@ -23,6 +23,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { BrainEngine } from '../src/core/engine.ts';
 import type { OperationContext } from '../src/core/ops/contract.ts';
+import { isDurabilityHardenedAsync } from '../src/core/brain-repo-durability.ts';
 import { phaseCGrandfather } from '../src/commands/migrations/v0_13_1.ts';
 import { admitCanonicalGrandfather } from '../src/core/persistence/grandfather.ts';
 import { claimWorktree } from '../src/core/persistence/ownership.ts';
@@ -285,4 +286,46 @@ for (const kind of testBackends()) describe(`#5530 Git effect coalescing (${kind
     expect(new Set((await engine.executeRaw<{ reason: string }>("SELECT outcome->>'reason' AS reason FROM persistence_effects WHERE kind='git'")).map(r => r.reason)))
       .toEqual(new Set(['durability_not_enabled']));
   }), 300_000);
+});
+
+for (const kind of testBackends()) describe(`native Git durability probe failures (${kind})`, () => {
+  test('a failed hook read retains unfinished Git effects', () => withBrain(kind, async ({ engine, home, ctx }) => {
+    const repo = makeRepo(home, 'probe-error');
+    await bindSource(engine, 'default', repo);
+    await activateSharedSkillPersistence(engine, { confirmQuiesced: true });
+    harden(repo);
+    await pauseGitEffects(engine, () => seed(ctx('default'), 2));
+    // A directory at the hook path makes the actual native hook read fail.
+    const hook = join(repo.root, '.git', 'hooks', 'post-commit');
+    rmSync(hook); mkdirSync(hook);
+    const before = repo.commits();
+    await release(engine); await pass(engine);
+    const effects = await engine.executeRaw<{ state: string; error_code: string; outcome: unknown }>(
+      "SELECT state,error_code,outcome FROM persistence_effects WHERE kind='git'");
+    expect(effects.length).toBe(2);
+    expect(effects.every(row => row.state === 'queued' && row.error_code === 'git_unavailable' && row.outcome === null)).toBe(true);
+    expect(repo.commits()).toBe(before); expect(repo.pushes()).toBe(0);
+    await expect(isDurabilityHardenedAsync(join(home, 'missing-checkout'))).rejects.toMatchObject({ code: 'git_unavailable' });
+  }), 300_000);
+  // Windows chmod cannot remove search permission; root can bypass it.
+  test.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('an unreadable hooks directory is not absent durability', () => withBrain(kind, async ({ engine, home, ctx }) => {
+    const repo = makeRepo(home, 'unreadable-hook');
+    await bindSource(engine, 'default', repo);
+    await activateSharedSkillPersistence(engine, { confirmQuiesced: true });
+    harden(repo);
+    await pauseGitEffects(engine, () => seed(ctx('default'), 2));
+    const hooks = join(repo.root, '.git', 'hooks'), before = repo.commits();
+    chmodSync(hooks, 0o000);
+    try {
+      expect(existsSync(join(hooks, 'post-commit'))).toBe(false);
+      await expect(isDurabilityHardenedAsync(repo.root)).rejects.toMatchObject({ code: 'git_unavailable' });
+      await release(engine); await pass(engine);
+      const effects = await engine.executeRaw<{ state: string; error_code: string; outcome: unknown }>(
+        "SELECT state,error_code,outcome FROM persistence_effects WHERE kind='git'");
+      expect(effects.length).toBe(2);
+      expect(effects.every(row => row.state === 'queued' && row.error_code === 'git_unavailable' && row.outcome === null)).toBe(true);
+      expect(repo.commits()).toBe(before); expect(repo.pushes()).toBe(0);
+    } finally { chmodSync(hooks, 0o755); }
+  }), 300_000);
+
 });
