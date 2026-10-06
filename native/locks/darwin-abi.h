@@ -23,6 +23,7 @@ extern int open(const char *, int, ...);
 extern int openat(int, const char *, int, ...);
 extern int mkdirat(int, const char *, unsigned short);
 extern int linkat(int, const char *, int, const char *, int);
+extern int renameatx_np(int, const char *, int, const char *, unsigned int);
 extern int unlinkat(int, const char *, int);
 extern long read(int, void *, size_t);
 extern long write(int, const void *, size_t);
@@ -33,6 +34,7 @@ extern int close(int);
 extern int flock(int, int);
 extern int *__error(void);
 #define errno (*__error())
+#define RENAME_EXCL 0x00000004
 #define O_RDWR 0x0002
 #define O_RDONLY 0
 #define O_WRONLY 1

@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <sys/stdio.h>
 _Static_assert(sizeof(struct stat) == 144, "Darwin stat ABI size");
 _Static_assert(offsetof(struct stat, st_dev) == 0, "Darwin stat device offset");
 _Static_assert(offsetof(struct stat, st_ino) == 8, "Darwin stat inode offset");
@@ -24,4 +25,6 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(&read), long (*)(int, voi
 _Static_assert(__builtin_types_compatible_p(__typeof__(&fsync), int (*)(int)), "fsync ABI");
 _Static_assert(__builtin_types_compatible_p(__typeof__(&ftruncate), int (*)(int, int64_t)), "ftruncate ABI");
 _Static_assert(__builtin_types_compatible_p(__typeof__(&lseek), int64_t (*)(int, int64_t, int)), "lseek ABI");
+_Static_assert(RENAME_EXCL == 4, "Darwin exclusive rename flag ABI");
+_Static_assert(__builtin_types_compatible_p(__typeof__(&renameatx_np), int (*)(int, const char *, int, const char *, unsigned int)), "renameatx_np ABI");
 int main(void) { return 0; }
