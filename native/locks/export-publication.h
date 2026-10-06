@@ -306,6 +306,9 @@ static unsigned long export_publish(export_dir *parent, const char *temporary, c
   unsigned long error = SetFileInformationByHandle(handle, FileRenameInfo, rename, (DWORD)size) ? 0 : export_error();
   free(rename); free(wide);
   return error;
+#elif defined(__APPLE__)
+  (void)handle;
+  return renameatx_np(parent->handle, temporary, parent->handle, leaf, RENAME_EXCL) == 0 ? 0 : export_error();
 #else
   (void)handle;
   return linkat(parent->handle, temporary, parent->handle, leaf, 0) == 0 ? 0 : export_error();
@@ -467,7 +470,7 @@ static napi_value publish_export_file(napi_env env, napi_callback_info info) {
   if ((error = export_verify(handle, parent))) goto failed;
   if ((error = export_publish(parent, handle->temporary, leaf, temporary))) goto failed;
   published = true;
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__APPLE__)
   if ((error = export_remove_temp(parent, handle->temporary, temporary))) goto failed;
 #endif
   if ((error = export_flush_dir(parent))) goto failed;

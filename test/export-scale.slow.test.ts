@@ -69,7 +69,12 @@ for (const backend of testBackends()) describe(`export scale: ${backend}`, () =>
       await runExport(engine, ['--dir', dir]);
       expect(readdirSync(join(dir, 'scale')).filter(name => name.endsWith('.md')).length).toBe(PAGES);
       expect(readdirSync(join(dir, 'scale/.raw')).length).toBe(FENCED);
-      expect(readFileSync(join(dir, pageFile(PAGES)), 'utf8')).toContain(`Body ${PAGES}`);
+      for (let n = 1; n <= PAGES; n++) {
+        const file = join(dir, pageFile(n));
+        expect(readFileSync(file, 'utf8').match(/^Body (\d+)$/m)?.[1]).toBe(String(n));
+        expect(statSync(file).nlink).toBe(1);
+      }
+      expect(readdirSync(join(dir, 'scale')).filter(name => name.endsWith('.tmp'))).toEqual([]);
       expect(readFileSync(join(dir, pageFile(PAGES - 1)), 'utf8')).toContain('scale-tag');
       expect(parseFactsFence(readFileSync(join(dir, pageFile(PAGES - 1)), 'utf8')).facts[0].active).toBe(false);
       expect(parseFactsFence(readFileSync(join(dir, 'scale/p000100.md'), 'utf8')).facts[0].active).toBe(false);

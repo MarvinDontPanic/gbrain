@@ -82,8 +82,10 @@ Components are limited to 255 UTF-8 bytes and walks to 256 components.
 Begin exclusively creates `.gbrain-export-status` and writes and flushes
 `GBRAIN EXPORT INCOMPLETE\n`. Existing markers are never removed or overwritten.
 Each file is fully written and flushed to a same-directory exclusive temporary
-file before publication. POSIX uses `linkat(..., 0)` followed by temporary-name
-removal and directory `fsync`; Windows uses `SetFileInformationByHandle` with
+file before publication. Linux uses `linkat(..., 0)` followed by temporary-name
+removal; macOS uses `renameatx_np(..., RENAME_EXCL)` to move the staging file
+atomically without replacing an existing destination. Both flush the output
+directory with `fsync`. Windows uses `SetFileInformationByHandle` with
 `FileRenameInfo`, `ReplaceIfExists=FALSE`, a null `RootDirectory`, and the absolute
 destination path. Retained ancestor handles deny delete sharing throughout the
 rename, so destination components cannot be replaced. Existing files, hard-link
