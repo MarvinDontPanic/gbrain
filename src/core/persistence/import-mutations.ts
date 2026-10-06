@@ -14,16 +14,23 @@ import { assertImportPaths, managedImportContent, prepareManagedImportMutation, 
 import { submissionAuthority } from './authority.ts';
 import { inspectUnchanged, screeningRequest } from './noop-kernel.ts';
 import type { WorktreeBinding } from './ownership.ts';
-import type { PageSnapshot } from '../page-state/types.ts';
+import { assertPageRevision, type PageSnapshot } from '../page-state/types.ts';
 import { readFix, trustedCliRequired } from '../ops/op-fix.ts';
 
+/** reviewedPreimage binds a caller-reviewed file/revision at first admission.
+ * Re-entry resumes the saved native intent, never a newly observed revision. */
 export async function importManagedFile(engine: BrainEngine, filePath: string, sourcePath: string,
-  opts: { sourceId?: string; noEmbed?: boolean; activePack?: ImportPack; signal?: AbortSignal; slugRoot?: string } = {}): Promise<ImportResult> {
+  opts: { sourceId?: string; noEmbed?: boolean; activePack?: ImportPack; signal?: AbortSignal; slugRoot?: string; reviewedPreimage?: { targetHash: string | null; revision: string | null } } = {}): Promise<ImportResult> {
   const caller = currentSubmissionAuthority();
   if (caller && caller.kind !== 'application' || currentVerifiedLocalWriter()?.remote) {
     throw trustedCliRequired('Managed filesystem import requires the trusted local CLI.');
   }
   opts.signal?.throwIfAborted();
+  const reviewed = opts.reviewedPreimage ? { ...opts.reviewedPreimage } : undefined;
+  if (reviewed && (reviewed.targetHash !== null && !/^[0-9a-f]{64}$/.test(reviewed.targetHash) ||
+    reviewed.revision !== null && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(reviewed.revision))) {
+    throw new TypeError('reviewedPreimage requires a SHA-256 target hash and UUID revision, or null for absent content.');
+  }
   if (isImageFilePath(sourcePath) && process.env.GBRAIN_EMBEDDING_MULTIMODAL !== 'true') {
     throw opError('invalid_params', 'Image import requires GBRAIN_EMBEDDING_MULTIMODAL=true.',
       `${sourcePath} is an image and multimodal embeddings are off, so it was not imported. Import only text files, or ask the user whether to enable GBRAIN_EMBEDDING_MULTIMODAL=true for the gbrain process (image embeddings can cost money).`);
@@ -49,7 +56,7 @@ export async function importManagedFile(engine: BrainEngine, filePath: string, s
   const ctx = { engine, remote: false, sourceId, config: loadConfig() ?? { engine: engine.kind } } as OperationContext;
   await initializeLocalPersistence(ctx);
   const principal = await requestPrincipalForContext(ctx);
-  const key = digest({ principal, incarnation: binding.source_incarnation, inputPath, sourcePath, path, inputHash, noEmbed: !!opts.noEmbed, activePack: opts.activePack ?? null });
+  const key = digest({ principal, incarnation: binding.source_incarnation, inputPath, sourcePath, path, inputHash, noEmbed: !!opts.noEmbed, activePack: opts.activePack ?? null, ...(reviewed ? { reviewedTargetHash: reviewed.targetHash } : {}) });
   const op = 'managed-file-import';
   const readPending = async () => {
     const [row] = await engine.executeRaw<{ completed_keys: [ManagedImportIntent & { request_id: string; source_id: string }] }>(
@@ -59,9 +66,16 @@ export async function importManagedFile(engine: BrainEngine, filePath: string, s
   let params = await readPending();
   if (!params) {
     const snapshot = await engine.readPageSnapshot(slug, { sourceId, includeDeleted: true });
+    const targetHash = existsSync(target) ? sha256(readImportBytes(target)) : null;
+    if (reviewed) {
+      assertPageRevision(snapshot, reviewed.revision === null ? {} : { expectedRevision: reviewed.revision });
+      if (targetHash !== reviewed.targetHash) throw opError('source_changed', 'The canonical file changed since it was reviewed.',
+        'The reviewed preimage no longer matches the canonical file, so it was not overwritten. Review the current file before submitting a new import.');
+    }
+    const expectedRevision = reviewed ? reviewed.revision : snapshot?.revision;
     const intent: ManagedImportIntent = { kind: 'managed_file_import', slug, content, sourcePath, path, inputPath, inputHash,
-      targetHash: existsSync(target) ? sha256(readImportBytes(target)) : null,
-      ownerEpoch: String(binding.owner_epoch), ...(snapshot ? { expected_revision: snapshot.revision } : {}),
+      targetHash: reviewed ? reviewed.targetHash : targetHash,
+      ownerEpoch: String(binding.owner_epoch), ...(expectedRevision ? { expected_revision: expectedRevision } : {}),
       noEmbed: !!opts.noEmbed, ...(opts.activePack ? { activePack: opts.activePack } : {}) };
     // #5470: an import whose publication would change nothing takes no admission.
     if (await unchangedManagedImport(ctx, binding, intent, snapshot)) return { slug, status: 'skipped', chunks: 0 };

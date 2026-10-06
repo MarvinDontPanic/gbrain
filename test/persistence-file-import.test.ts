@@ -142,6 +142,79 @@ test('a committed import replays the durable cursor when checkpoint cleanup was 
   }
 }), 120_000);
 
+test('reviewed import rejects a target changed before admission rather than adopting its new preimage', async () => withEnv(env, async () => {
+  for (const engine of engines) for (const race of ['file', 'revision']) {
+    const f = await fixture(engine), file = join(f.input, 'reviewed.md');
+    writeFileSync(file, '# Reviewed source\n\nOriginal authored context.\n');
+    await importManagedFile(engine, file, 'reviewed.md', { sourceId: f.sourceId, noEmbed: true });
+    const snapshot = (await engine.readPageSnapshot('reviewed', { sourceId: f.sourceId }))!;
+    const reviewedPreimage = { targetHash: sha256(readFileSync(join(f.root, 'reviewed.md'))), revision: snapshot.revision };
+    const intervening = '# Intervening source\n\nThis unreviewed edit must survive.\n';
+    if (race === 'file') writeFileSync(join(f.root, 'reviewed.md'), intervening);
+    else {
+      writeFileSync(file, intervening);
+      await importManagedFile(engine, file, 'reviewed.md', { sourceId: f.sourceId, noEmbed: true });
+      // Isolate revision from filesystem precondition: the caller may have separately approved unchanged file bytes.
+      reviewedPreimage.targetHash = sha256(readFileSync(join(f.root, 'reviewed.md')));
+    }
+    writeFileSync(file, '# Source-reviewed derivative\n\nOnly replace the reviewed revision.\n');
+    const opts = { sourceId: f.sourceId, noEmbed: true, reviewedPreimage };
+    await expect(importManagedFile(engine, file, 'reviewed.md', opts)).rejects.toThrow();
+    expect(readFileSync(join(f.root, 'reviewed.md'), 'utf8')).toContain('unreviewed edit must survive');
+    expect(await engine.executeRaw("SELECT completed_keys FROM op_checkpoints WHERE op='managed-file-import'")).toHaveLength(0);
+  }
+}), 120_000);
+
+test('reviewed import absence and committed same-request resume retain the original precondition', async () => withEnv(env, async () => {
+  for (const engine of engines) {
+    const f = await fixture(engine), file = join(f.input, 'reviewed-new.md');
+    writeFileSync(file, '# New reviewed source\n\nThe accepted source must survive caller interruption.\n');
+    const opts = { sourceId: f.sourceId, noEmbed: true, reviewedPreimage: { targetHash: null, revision: null } };
+    const execute = engine.executeRaw; let fail = true;
+    engine.executeRaw = async function(this: BrainEngine, sql, params) {
+      if (fail && sql.startsWith('DELETE FROM op_checkpoints') && params?.[0] === 'managed-file-import') { fail = false; throw new Error('reviewed caller interruption'); }
+      return execute.call(this, sql, params);
+    } as BrainEngine['executeRaw'];
+    try { await expect(importManagedFile(engine, file, 'reviewed-new.md', opts)).rejects.toThrow('reviewed caller interruption'); }
+    finally { engine.executeRaw = execute; }
+    const [saved] = await engine.executeRaw<{ completed_keys: [{request_id: string; targetHash: null; expected_revision?: string}] }>("SELECT completed_keys FROM op_checkpoints WHERE op='managed-file-import'");
+    expect(saved.completed_keys[0].targetHash).toBeNull();
+    expect(saved.completed_keys[0].expected_revision).toBeUndefined();
+    const current = (await engine.readPageSnapshot('reviewed-new', { sourceId: f.sourceId }))!;
+    // A resumed caller sees the committed revision; the original accepted intent still wins.
+    const result = await importManagedFile(engine, file, 'reviewed-new.md', { ...opts, reviewedPreimage: { ...opts.reviewedPreimage, revision: current.revision } });
+    expect(result.status).toBe('imported');
+    const requests = await engine.executeRaw<{ request_id: string }>('SELECT request_id FROM persistence_requests WHERE source_id=$1', [f.sourceId]);
+    expect(requests).toEqual([{ request_id: saved.completed_keys[0].request_id }]);
+  }
+}), 120_000);
+
+test('reviewed import retains approved preconditions when the target changes after native admission', async () => withEnv(env, async () => {
+  for (const engine of engines) {
+    const f = await fixture(engine), file = join(f.input, 'after-admission.md');
+    writeFileSync(file, '# Accepted derivative\n\nOnly the approved absent target may be created.\n');
+    const transaction = engine.transaction; let changed = false;
+    engine.transaction = async function(this: BrainEngine, callback) {
+      const result = await transaction.call(this, callback);
+      const row = result as { state?: string; operation?: string };
+      if (!changed && row?.state === 'queued' && row.operation === 'put_page') {
+        changed = true; writeFileSync(join(f.root, 'after-admission.md'), '# Concurrent authored source\n');
+      }
+      return result;
+    } as BrainEngine['transaction'];
+    try {
+      await expect(importManagedFile(engine, file, 'after-admission.md', { sourceId: f.sourceId, noEmbed: true,
+        reviewedPreimage: { targetHash: null, revision: null } })).rejects.toThrow();
+    } finally { engine.transaction = transaction; }
+    expect(changed).toBe(true);
+    expect(readFileSync(join(f.root, 'after-admission.md'), 'utf8')).toBe('# Concurrent authored source\n');
+    const [request] = await engine.executeRaw<{ state: string; intent: { targetHash: null; expected_revision?: string } }>(
+      'SELECT state,intent FROM persistence_requests WHERE source_id=$1', [f.sourceId]);
+    expect(request.state).toBe('conflict'); expect(request.intent.targetHash).toBeNull();
+    expect(request.intent.expected_revision).toBeUndefined();
+  }
+}), 120_000);
+
 test('managed import refuses cross-source input, symlink targets, skills, malformed YAML and disabled image modality', async () => withEnv(env, async () => {
   for (const engine of engines) {
     const f = await fixture(engine), other = await fixture(engine);
